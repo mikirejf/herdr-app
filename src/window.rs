@@ -523,6 +523,13 @@ impl AppWindow {
             place_write: None,
         };
         w._focus_lost = Some(cx.on_focus_lost(window, |this, window, cx| this.restore_focus(window, cx)));
+        // Mods see a multi-key shortcut in progress through window().pending_keys.
+        cx.observe_pending_input(window, |this, window, cx| {
+            if mods::publish_window(this.window_json(window)) {
+                this.refresh_mods(cx);
+            }
+        })
+        .detach();
         w._place = Some(cx.observe_window_bounds(window, |this, window, cx| {
             if let Some(t) = crate::place::changed(window, cx) {
                 this.place_write = Some(t);

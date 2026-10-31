@@ -231,6 +231,23 @@ mod tests {
     }
 
     #[test]
+    fn global_key_sequences_wait_for_their_second_key_in_a_terminal() {
+        use gpui::{KeyContext, Keymap, Keystroke};
+        let mut keymap = Keymap::default();
+        keymap.add_bindings(super::parse(r#"{"global": {"ctrl-b z": "pane.zoom", "ctrl-b -": "pane.split:down"}}"#).unwrap());
+        let contexts = [KeyContext::parse("Herdr layout = main").unwrap(), KeyContext::parse("Terminal").unwrap()];
+        let keys = |s: &str| s.split(' ').map(|k| Keystroke::parse(k).unwrap()).collect::<Vec<_>>();
+        let (bindings, pending) = keymap.bindings_for_input(&keys("ctrl-b"), &contexts);
+        assert!(bindings.is_empty() && pending);
+        for done in ["ctrl-b z", "ctrl-b -"] {
+            let (bindings, pending) = keymap.bindings_for_input(&keys(done), &contexts);
+            assert_eq!((bindings.len(), pending), (1, false), "{done}");
+        }
+        let (bindings, pending) = keymap.bindings_for_input(&keys("ctrl-b q"), &contexts);
+        assert!(bindings.is_empty() && !pending);
+    }
+
+    #[test]
     fn shipped_keys_load() {
         for keys in [include_str!("../defaults/keys.json"), include_str!("../defaults/keys.macos.json")] {
             assert_eq!(super::parse(keys).err(), None);

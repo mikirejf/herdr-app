@@ -493,6 +493,10 @@ the build doesn't do.
   current layout: `cmd-shift-]` and `cmd-}` match the same US-layout keypress.
   Existing `keys.json` files don't need to change.
 - Terminal keys honor the program's negotiated Kitty mode, including on Windows.
+- A space makes a key sequence: `"ctrl-b z": "pane.zoom"` is ctrl-b, then z.
+  While one is half typed, `window().pending_keys` lists its keys
+  (`["ctrl-b"]`); the status bar shows them as PREFIX. A key that doesn't
+  continue it goes to the program, the prefix first.
 
 ## Commands
 
