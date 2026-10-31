@@ -5971,6 +5971,13 @@ impl Window {
             currently_pending = PendingInput::default();
         }
 
+        let prefix = currently_pending
+            .keystrokes
+            .first()
+            .filter(|first| {
+                first.modifiers.control || first.modifiers.platform || first.modifiers.function
+            })
+            .map(|first| (first.clone(), currently_pending.keystrokes.len()));
         let match_result = self.rendered_frame.dispatch_tree.dispatch_key(
             currently_pending.keystrokes,
             keystroke.clone(),
@@ -5978,6 +5985,23 @@ impl Window {
         );
 
         if !match_result.to_replay.is_empty() {
+            // A modified prefix (ctrl-space of "ctrl-space z") works like a terminal
+            // multiplexer's: a key that doesn't continue it cancels it and is dropped, and
+            // the prefix pressed again sends the prefix once. Replaying both would type
+            // keys the person meant as a command.
+            if let Some((prefix, len)) = prefix
+                && match_result.to_replay.iter().all(|replay| replay.bindings.is_empty())
+            {
+                if len == 1
+                    && prefix.modifiers == keystroke.modifiers
+                    && prefix.key == keystroke.key
+                {
+                    self.replay_pending_input(match_result.to_replay, cx);
+                }
+                self.pending_input_changed(cx);
+                cx.propagate_event = false;
+                return;
+            }
             self.replay_pending_input(match_result.to_replay, cx);
             cx.propagate_event = true;
         }
