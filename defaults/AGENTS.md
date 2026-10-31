@@ -528,7 +528,8 @@ The main ones:
   skip settled tabs).
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
   terminal, or a mod pane), `pane.close {pane?}`,
-  `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`.
+  `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`,
+  `pane.equalize` (equal widths and heights for the current tab's panes, a run of side-by-side panes sharing evenly).
   `pane.focus {terminal}` prefers the first visible layout terminal block showing that
   address, then its model pane. Clicking a terminal block focuses it too.
   While a layout terminal block is focused, implicit split/close/zoom/go/swap and

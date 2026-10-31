@@ -2607,7 +2607,7 @@ impl AppWindow {
         if person {
             crate::telemetry::command(command.name);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.split" | "pane.close" | "pane.swap" | "terminal.keep" | "terminal.park") {
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.split" | "pane.close" | "pane.swap" | "pane.equalize" | "terminal.keep" | "terminal.park") {
             let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k));
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
             let machine = if name == "space.new" { Self::arg(&args, "machine") }
@@ -2800,6 +2800,14 @@ impl AppWindow {
                     && c.root.panes().len() > 1
                 {
                     c.zoomed = if c.zoomed.as_deref() == Some(pane.as_str()) { None } else { Some(pane) };
+                }
+            }
+            "pane.equalize" => {
+                if let Some(id) = self.model.active_tab().map(|c| c.id.clone())
+                    && let Some(c) = self.model.tab_mut(&id)
+                    && c.root.panes().len() > 1
+                {
+                    c.root.equalize();
                 }
             }
             "pane.focus" => {

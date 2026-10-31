@@ -246,6 +246,12 @@ Focus the pane to the "left", "right", "up" or "down".
 |---|---|
 | `direction` | yes |
 
+## `pane.equalize`
+
+Give the panes of the current tab equal widths and heights.
+
+No arguments.
+
 ## `pane.swap`
 
 Swap the focused pane with its neighbor in a direction.

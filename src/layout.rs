@@ -622,6 +622,31 @@ impl Node {
         }
     }
 
+    /// Gives every pane of the tree the same share of its row or column. A run of
+    /// same-axis containers is one row of n segments, so three panes side by side
+    /// get a third each. Fixed (px) and hidden children keep what they have.
+    pub fn equalize(&mut self) {
+        let axis = self.axis().filter(|_| self.children().len() > 1);
+        if let Some(children) = self.children_mut() {
+            for child in children.iter_mut() {
+                if let Some(axis) = axis
+                    && !child.hidden
+                    && !matches!(child.size, Some(Size::Px { .. }))
+                {
+                    child.size = Some(Size::Weight { weight: child.segments(axis) as f32 });
+                }
+                child.equalize();
+            }
+        }
+    }
+
+    fn segments(&self, axis: Axis) -> usize {
+        if self.axis() != Some(axis) {
+            return 1;
+        }
+        self.children().iter().filter(|c| !c.hidden && !matches!(c.size, Some(Size::Px { .. }))).map(|c| c.segments(axis)).sum()
+    }
+
     /// Swaps two nodes' places in the tree (sizes stay with the places).
     pub fn swap(&mut self, a: &str, b: &str) -> bool {
         let (Some(na), Some(nb)) = (self.find(a).cloned(), self.find(b).cloned()) else { return false };
@@ -861,6 +886,88 @@ mod tests {
         assert_eq!(n.visible_blocks().iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), ["b"]);
         n.find_mut("b").unwrap().hidden = true;
         assert_eq!(n.active_child().map(|c| c.id.as_str()), Some("a"));
+    }
+
+    fn weights(n: &Node, ids: &[&str]) -> Vec<f32> {
+        ids.iter()
+            .map(|id| match n.find(id).and_then(|x| x.size) {
+                Some(Size::Weight { weight }) => weight,
+                other => panic!("{id}: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn unequal(id: &str, weight: f32) -> Node {
+        let mut n = term(id);
+        n.size = Some(Size::Weight { weight });
+        n
+    }
+
+    #[test]
+    fn equalizing_three_side_by_side_panes_gives_thirds() {
+        let mut n = Node::container("t", Axis::Row, vec![unequal("a", 0.5), unequal("b", 0.25), unequal("c", 0.25)]);
+        n.equalize();
+        let w = weights(&n, &["a", "b", "c"]);
+        assert_eq!(w[0], w[1]);
+        assert_eq!(w[1], w[2]);
+    }
+
+    #[test]
+    fn equalizing_columns_and_the_panes_stacked_in_one() {
+        let right = Node::container("r", Axis::Column, vec![unequal("b", 0.8), unequal("c", 0.2)]);
+        let mut n = Node::container("t", Axis::Row, vec![unequal("a", 0.9), right]);
+        n.find_mut("r").unwrap().size = Some(Size::Weight { weight: 0.1 });
+        n.equalize();
+        let w = weights(&n, &["a", "r"]);
+        assert_eq!(w[0], w[1]);
+        let h = weights(&n, &["b", "c"]);
+        assert_eq!(h[0], h[1]);
+    }
+
+    #[test]
+    fn equalizing_nested_runs_gives_each_run_its_own_equal_shares() {
+        // a | (b over (c | d | e)): the inner row is three equal panes.
+        let inner = Node::container("in", Axis::Row, vec![unequal("c", 0.7), unequal("d", 0.2), unequal("e", 0.1)]);
+        let mid = Node::container("mid", Axis::Column, vec![unequal("b", 0.9), inner]);
+        let mut n = Node::container("t", Axis::Row, vec![unequal("a", 0.1), mid]);
+        n.equalize();
+        let w = weights(&n, &["a", "mid"]);
+        assert_eq!(w[0], w[1]);
+        let h = weights(&n, &["b", "in"]);
+        assert_eq!(h[0], h[1]);
+        let c = weights(&n, &["c", "d", "e"]);
+        assert_eq!((c[0], c[1]), (c[1], c[2]));
+    }
+
+    #[test]
+    fn equalizing_a_run_of_same_axis_containers_counts_every_segment() {
+        // a | (b | c) as nested rows is three panes side by side, not 1/2, 1/4, 1/4.
+        let nested = Node::container("n", Axis::Row, vec![unequal("b", 0.9), unequal("c", 0.1)]);
+        let mut n = Node::container("t", Axis::Row, vec![unequal("a", 0.5), nested]);
+        n.equalize();
+        let w = weights(&n, &["a", "n"]);
+        let inner = weights(&n, &["b", "c"]);
+        assert_eq!(inner[0], inner[1]);
+        assert_eq!(w[1] / w[0], inner[0] + inner[1]);
+    }
+
+    #[test]
+    fn equalizing_one_pane_changes_nothing() {
+        let mut n = Node::container("t", Axis::Row, vec![term("a")]);
+        let before = n.clone();
+        n.equalize();
+        assert_eq!(n, before);
+    }
+
+    #[test]
+    fn equalizing_leaves_fixed_sizes_alone() {
+        let mut side = term("side");
+        side.size = Some(Size::Px { px: 200.0 });
+        let mut n = Node::container("t", Axis::Row, vec![side, unequal("a", 0.9), unequal("b", 0.1)]);
+        n.equalize();
+        assert_eq!(n.find("side").unwrap().size, Some(Size::Px { px: 200.0 }));
+        let w = weights(&n, &["a", "b"]);
+        assert_eq!(w[0], w[1]);
     }
 
     #[test]
