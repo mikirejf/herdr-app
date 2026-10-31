@@ -110,7 +110,7 @@
                 "tab": "active",
                 "pane": {
                   "gap": 8,
-                  "radius": 10,
+                  "radius": 4,
                   "background": "background",
                   "lone": true,
                   "border": {
