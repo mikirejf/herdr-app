@@ -390,6 +390,10 @@ pub struct Person {
     /// How opaque dim (faint) terminal text is drawn.
     #[serde(skip_serializing_if = "is_default_faint_opacity")]
     pub faint_opacity: f32,
+    /// Terminal glyph thickening, 0..255 like Ghostty's font-thicken-strength;
+    /// unset: macOS's own, which depends on the text's brightness.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_thicken: Option<u8>,
     /// Anonymous usage data (telemetry.rs). On unless set to false.
     #[serde(skip_serializing_if = "is_true")]
     pub telemetry: bool,
@@ -472,6 +476,7 @@ impl Default for Person {
             cell_width: CELL_WIDTH,
             line_height: LINE_HEIGHT,
             faint_opacity: FAINT_OPACITY,
+            font_thicken: None,
             telemetry: true,
             clipboard_write: true,
             minimum_contrast: 1.0,
@@ -495,6 +500,7 @@ pub struct Settings {
     pub cell_width: f32,
     pub line_height: f32,
     pub faint_opacity: f32,
+    pub font_thicken: Option<u8>,
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
     pub zoom: f32,
     /// The theme showing: a preset or a file in themes/.
@@ -545,6 +551,7 @@ impl Default for Settings {
             cell_width: CELL_WIDTH,
             line_height: LINE_HEIGHT,
             faint_opacity: FAINT_OPACITY,
+            font_thicken: None,
             zoom: 1.0,
             theme: DEFAULT_DARK.into(),
             theme_light: DEFAULT_LIGHT.into(),
@@ -581,9 +588,10 @@ impl Settings {
             font_size: look.font_size.or(person.font_size).unwrap_or(d.font_size),
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
-            cell_width: person.cell_width,
-            line_height: person.line_height,
-            faint_opacity: person.faint_opacity,
+            cell_width: look.cell_width.unwrap_or(person.cell_width),
+            line_height: look.line_height.unwrap_or(person.line_height),
+            faint_opacity: look.faint_opacity.unwrap_or(person.faint_opacity),
+            font_thicken: look.font_thicken.or(person.font_thicken),
             zoom: person.zoom,
             theme: if dark { theme_dark.clone() } else { theme_light.clone() },
             theme_light,
@@ -878,21 +886,25 @@ mod tests {
             font: Some("person".into()), font_size: Some(19.0), ui_font: Some("person-ui".into()),
             theme: Some(crate::layout::ThemeChoice::One("paper".into())),
             colors: [("accent".into(), "#123456".into())].into(),
+            cell_width: 1.04, line_height: 1.07, faint_opacity: 0.47, font_thicken: Some(255),
             ..Person::default()
         };
         let look = crate::layout::Look {
             font: Some("layout".into()), font_size: Some(14.0), ui_font: Some("layout-ui".into()),
             theme: Some(crate::layout::ThemeChoice::One("ink".into())),
             colors: Some([("accent".into(), "#abcdef".into()), ("text".into(), "#ffffff".into())].into()),
+            cell_width: Some(0.95), line_height: Some(0.97), faint_opacity: Some(0.5), font_thicken: Some(64),
             ..Default::default()
         };
         let inherited = Settings::compose(&person, &crate::layout::Look::default(), true);
         assert_eq!((inherited.font_family.as_str(), inherited.font_size, inherited.ui_font_family.as_str(), inherited.theme.as_str()), ("person", 19.0, "person-ui", "paper"));
         assert_eq!(inherited.colors["accent"], "#123456");
+        assert_eq!((inherited.cell_width, inherited.line_height, inherited.faint_opacity, inherited.font_thicken), (1.04, 1.07, 0.47, Some(255)));
         let own = Settings::compose(&person, &look, true);
         assert_eq!((own.font_family.as_str(), own.font_size, own.ui_font_family.as_str(), own.theme.as_str()), ("layout", 14.0, "layout-ui", "ink"));
         assert_eq!(own.colors["accent"], "#abcdef");
         assert_eq!(own.colors["text"], "#ffffff");
+        assert_eq!((own.cell_width, own.line_height, own.faint_opacity, own.font_thicken), (0.95, 0.97, 0.5, Some(64)));
     }
 
     #[test]
@@ -911,7 +923,7 @@ mod tests {
     #[test]
     fn terminal_cell_metrics_default_to_the_old_look_and_validate() {
         let default = Person::default();
-        assert_eq!((default.cell_width, default.line_height, default.faint_opacity), (1.0, 1.15, 0.6));
+        assert_eq!((default.cell_width, default.line_height, default.faint_opacity, default.font_thicken), (1.0, 1.15, 0.6, None));
         assert!(serde_json::to_value(&default).unwrap().get("cell_width").is_none());
         let person: Person = serde_json::from_value(serde_json::json!({"cell_width": 1.04, "line_height": 1.07, "faint_opacity": 0.47})).unwrap();
         let settings = Settings::compose(&person, &crate::layout::Look::default(), true);

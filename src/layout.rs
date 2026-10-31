@@ -171,6 +171,15 @@ pub struct Look {
     /// 0..1: below 1, what's behind a terminal shows through its background.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_opacity: Option<f32>,
+    /// Terminal cell width, line height and dim text, as in settings.json.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_width: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_height: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faint_opacity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_thicken: Option<u8>,
 }
 
 /// A layout's theme: one name, or a pair the system's appearance (or the

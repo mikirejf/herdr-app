@@ -992,6 +992,11 @@ fn cell_font(bold: bool, italic: bool) -> Font {
     f
 }
 
+/// Ghostty's thicken strength (0..255) as GPUI's glyph dilation (0..4).
+fn thicken_dilation(strength: u8) -> u8 {
+    (f32::from(strength) * 4.0 / 255.0).round() as u8
+}
+
 pub fn cell_size(window: &Window) -> Size<Pixels> {
     let ts = window.text_system();
     let f = cell_font(false, false);
@@ -1444,7 +1449,7 @@ impl Render for TerminalView {
                         }
                     },
                     move |bounds, _, window, cx| {
-                        paint_grid(bounds, &grid_paint, focused, window, cx);
+                        window.with_glyph_dilation(crate::settings::get().font_thicken.map(thicken_dilation), |window| paint_grid(bounds, &grid_paint, focused, window, cx));
                         let view = selection_view.clone();
                         window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                             if phase == DispatchPhase::Capture {

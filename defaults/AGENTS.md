@@ -296,7 +296,8 @@ layout's look and a block can differ:
 ```json
 { "id": "root", "type": "row", "theme": "graphite", "colors": { "accent": "#a7b4c6" },
   "font": "Geist Mono", "font_size": 15, "ui_font": "Geist",
-  "terminal_padding": [10, 6], "terminal_opacity": 1, ... }
+  "terminal_padding": [10, 6], "terminal_opacity": 1,
+  "cell_width": 1, "line_height": 1.15, "faint_opacity": 0.6, "font_thicken": 64, ... }
 ```
 
 - `theme`: `graphite`, `ink`, `moss` (dark), `paper` (light), or the name
@@ -318,6 +319,9 @@ layout's look and a block can differ:
 - `font` / `font_size`: the terminals' (px at zoom 1); `ui_font`: the mods'
   (their text sizes are their own, in px, and follow zoom). Optional: without
   them a layout uses settings.json's, else Herdr's (JetBrains Mono 14, Geist).
+  `cell_width`, `line_height`, `faint_opacity`, `font_thicken` work the
+  same way (see settings.json below); a clone of main with its own values
+  gives a second terminal look that `layout.switch` flips to.
   Herdr (main) leaves these unset; Terminals sets text size 15, and Herdr 98
   brings its own fonts.
   JetBrains Mono, Geist Mono and Geist ship with Herdr; any installed font
@@ -621,8 +625,13 @@ What's about the user, never a look:
 - `cell_width`: terminal cell width times the font's advance (default `1`);
   `line_height`: line height times the font's ascent + descent (default
   `1.15`, rounded up to whole pixels); `faint_opacity`: how opaque dim text
-  is (default `0.6`). macOS Terminal.app with SF Mono 14:
+  is (default `0.6`); `font_thicken`: terminal glyph thickening on macOS,
+  `0`..`255` like Ghostty's `font-thicken-strength` (unset: macOS's own,
+  heavier for brighter text). A layout's look sets these too and wins.
+  macOS Terminal.app with SF Mono 14:
   `{ "cell_width": 1.04, "line_height": 1.07, "faint_opacity": 0.47 }`.
+  Ghostty's built-in JetBrains Mono 14 (font `JetBrainsMono Nerd Font`):
+  `{ "cell_width": 0.954, "line_height": 0.97, "faint_opacity": 0.5, "font_thicken": 64 }`.
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
 - `colors`: theme color overrides (`{"accent":"#ff8800"}`), with the same

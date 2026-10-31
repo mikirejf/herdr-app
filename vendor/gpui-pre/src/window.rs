@@ -1180,6 +1180,7 @@ pub struct Window {
     /// This is used by `with_rem_size` to allow rendering an element tree with
     /// a given rem size.
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
+    glyph_dilation_override: Option<u8>,
     pub(crate) viewport_size: Size<Pixels>,
     layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
@@ -2077,6 +2078,7 @@ impl Window {
             text_rendering_mode: cx.text_rendering_mode.clone(),
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
+            glyph_dilation_override: None,
             viewport_size: content_size,
             layout_engine: Some(TaffyLayoutEngine::new()),
             root: None,
@@ -3030,6 +3032,18 @@ impl Window {
         self.element_id_stack.push(element_id.into());
         let result = f(self);
         self.element_id_stack.pop();
+        result
+    }
+
+    /// Paints the text `f` draws with a fixed glyph dilation (0..=4, see
+    /// `glyph_dilation_for_color`) instead of one picked from each glyph's color.
+    // Added for herdr-app: its terminals can match Ghostty's fixed
+    // `font-thicken-strength` rather than macOS's color-dependent smoothing.
+    pub fn with_glyph_dilation<R>(&mut self, dilation: Option<u8>, f: impl FnOnce(&mut Self) -> R) -> R {
+        let next = dilation.or(self.glyph_dilation_override);
+        let previous = std::mem::replace(&mut self.glyph_dilation_override, next);
+        let result = f(self);
+        self.glyph_dilation_override = previous;
         result
     }
 
@@ -4721,7 +4735,9 @@ impl Window {
         );
         let integer_origin = quantized_origin.map(|c| ScaledPixels(c.trunc()));
         let subpixel_rendering = self.should_use_subpixel_rendering(font_id, font_size);
-        let dilation = self.text_system().glyph_dilation_for_color(color);
+        let dilation = self
+            .glyph_dilation_override
+            .unwrap_or_else(|| self.text_system().glyph_dilation_for_color(color));
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
