@@ -997,13 +997,13 @@ pub fn cell_size(window: &Window) -> Size<Pixels> {
     let f = cell_font(false, false);
     let id = ts.resolve_font(&f);
     let fs = px(crate::settings::font_size());
-    let w = ts.advance(id, fs, 'M').map(|s| s.width).unwrap_or(fs * 0.6);
+    let settings = crate::settings::get();
+    let w = ts.advance(id, fs, 'M').map(|s| s.width).unwrap_or(fs * 0.6) * settings.cell_width;
     let h = ts.ascent(id, fs) + ts.descent(id, fs).abs();
-    // The width stays the font's own advance: GPUI only moves a glyph onto the
-    // grid once it drifts over 1px, so a rounded width made text wobble.
-    // Boxes snap their edges instead (`snap_box`).
+    // The width isn't rounded to whole pixels (glyphs keep their natural
+    // spacing); boxes snap their edges instead (`snap_box`).
     let scale = window.scale_factor();
-    size(w, px((f32::from(h) * 1.15 * scale).ceil() / scale))
+    size(w, px((f32::from(h) * settings.line_height * scale).ceil() / scale))
 }
 
 /// One piece of a row's drawing, in cells from the row's start.
@@ -1018,6 +1018,7 @@ enum RowOp {
 /// text in runs of one style (wide characters, sprites and icons on their own).
 fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, window: &mut Window) -> Vec<RowOp> {
     crate::bench::count(&crate::bench::ROWS);
+    let faint = crate::settings::get().faint_opacity;
     let mut ops = Vec::new();
     let mut x = 0;
     while x < row.len() {
@@ -1043,7 +1044,7 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, window: &mut Window) -> Vec<Row
         }
         let mut color = hsla(c.fg);
         if c.faint {
-            color.a = 0.6;
+            color.a = faint;
         }
         if crate::sprites::is_sprite(&c.text) {
             ops.push(RowOp::Sprite { x: start, text: c.text.clone(), color });

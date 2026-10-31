@@ -381,6 +381,15 @@ pub struct Person {
     /// The panels' font (their sizes follow zoom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
+    /// Terminal cell width, times the font's own advance.
+    #[serde(skip_serializing_if = "is_default_cell_width")]
+    pub cell_width: f32,
+    /// Terminal line height, times the font's ascent + descent.
+    #[serde(skip_serializing_if = "is_default_line_height")]
+    pub line_height: f32,
+    /// How opaque dim (faint) terminal text is drawn.
+    #[serde(skip_serializing_if = "is_default_faint_opacity")]
+    pub faint_opacity: f32,
     /// Anonymous usage data (telemetry.rs). On unless set to false.
     #[serde(skip_serializing_if = "is_true")]
     pub telemetry: bool,
@@ -435,6 +444,22 @@ fn is_true(b: &bool) -> bool {
     *b
 }
 
+const CELL_WIDTH: f32 = 1.0;
+const LINE_HEIGHT: f32 = 1.15;
+const FAINT_OPACITY: f32 = 0.6;
+
+fn is_default_cell_width(v: &f32) -> bool {
+    *v == CELL_WIDTH
+}
+
+fn is_default_line_height(v: &f32) -> bool {
+    *v == LINE_HEIGHT
+}
+
+fn is_default_faint_opacity(v: &f32) -> bool {
+    *v == FAINT_OPACITY
+}
+
 impl Default for Person {
     fn default() -> Self {
         Person {
@@ -444,6 +469,9 @@ impl Default for Person {
             font: None,
             font_size: None,
             ui_font: None,
+            cell_width: CELL_WIDTH,
+            line_height: LINE_HEIGHT,
+            faint_opacity: FAINT_OPACITY,
             telemetry: true,
             clipboard_write: true,
             minimum_contrast: 1.0,
@@ -464,6 +492,9 @@ pub struct Settings {
     pub font_size: f32,
     pub ui_font_family: String,
     pub ui_font_size: f32,
+    pub cell_width: f32,
+    pub line_height: f32,
+    pub faint_opacity: f32,
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
     pub zoom: f32,
     /// The theme showing: a preset or a file in themes/.
@@ -511,6 +542,9 @@ impl Default for Settings {
             font_size: 14.0,
             ui_font_family: "Geist".into(),
             ui_font_size: 13.0,
+            cell_width: CELL_WIDTH,
+            line_height: LINE_HEIGHT,
+            faint_opacity: FAINT_OPACITY,
             zoom: 1.0,
             theme: DEFAULT_DARK.into(),
             theme_light: DEFAULT_LIGHT.into(),
@@ -547,6 +581,9 @@ impl Settings {
             font_size: look.font_size.or(person.font_size).unwrap_or(d.font_size),
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
+            cell_width: person.cell_width,
+            line_height: person.line_height,
+            faint_opacity: person.faint_opacity,
             zoom: person.zoom,
             theme: if dark { theme_dark.clone() } else { theme_light.clone() },
             theme_light,
@@ -608,6 +645,15 @@ impl Settings {
         }
         if !(6.0..=72.0).contains(&self.font_size) {
             out.push(format!("font_size {} is outside 6..72", self.font_size));
+        }
+        if !(0.5..=2.0).contains(&self.cell_width) {
+            out.push(format!("cell_width {} is outside 0.5..2", self.cell_width));
+        }
+        if !(0.8..=3.0).contains(&self.line_height) {
+            out.push(format!("line_height {} is outside 0.8..3", self.line_height));
+        }
+        if !(0.0..=1.0).contains(&self.faint_opacity) {
+            out.push(format!("faint_opacity {} is outside 0..1", self.faint_opacity));
         }
         out
     }
@@ -860,6 +906,19 @@ mod tests {
             assert_eq!(serde_json::to_value(settings).unwrap()["option_as_alt"], value);
         }
         assert!(serde_json::from_value::<Person>(serde_json::json!({"option_as_alt": "left"})).is_err());
+    }
+
+    #[test]
+    fn terminal_cell_metrics_default_to_the_old_look_and_validate() {
+        let default = Person::default();
+        assert_eq!((default.cell_width, default.line_height, default.faint_opacity), (1.0, 1.15, 0.6));
+        assert!(serde_json::to_value(&default).unwrap().get("cell_width").is_none());
+        let person: Person = serde_json::from_value(serde_json::json!({"cell_width": 1.04, "line_height": 1.07, "faint_opacity": 0.47})).unwrap();
+        let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert_eq!((settings.cell_width, settings.line_height, settings.faint_opacity), (1.04, 1.07, 0.47));
+        assert!(settings.problems().is_empty());
+        let wild: Person = serde_json::from_value(serde_json::json!({"cell_width": 3, "line_height": 0.5, "faint_opacity": 2})).unwrap();
+        assert_eq!(Settings::compose(&wild, &crate::layout::Look::default(), true).problems().len(), 3);
     }
 
     #[test]

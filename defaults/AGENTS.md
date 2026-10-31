@@ -618,6 +618,11 @@ What's about the user, never a look:
   cargo). Read at start.
 - `font`, `font_size`, `ui_font`: used where the layout doesn't set its
   own. Herdr (main) leaves these unset. Bigger panels: `zoom`.
+- `cell_width`: terminal cell width times the font's advance (default `1`);
+  `line_height`: line height times the font's ascent + descent (default
+  `1.15`, rounded up to whole pixels); `faint_opacity`: how opaque dim text
+  is (default `0.6`). macOS Terminal.app with SF Mono 14:
+  `{ "cell_width": 1.04, "line_height": 1.07, "faint_opacity": 0.47 }`.
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
 - `colors`: theme color overrides (`{"accent":"#ff8800"}`), with the same

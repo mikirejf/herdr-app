@@ -907,10 +907,10 @@ fn apply_force_width_to_layout(layout: &mut LineLayout, force_width: Pixels) {
             let shaped_x = glyph.position.x;
 
             if shaped_x > last_base_shaped_x + force_width * 0.5 {
-                let forced_x = glyph_pos * force_width;
-                if (shaped_x - forced_x).abs() > px(1.) {
-                    glyph.position.x = forced_x;
-                }
+                // Every base glyph goes on the grid: with cells wider than the
+                // advance (herdr's `cell_width`), snapping only past 1px of drift
+                // left glyphs drifting and jumping back every few columns.
+                glyph.position.x = glyph_pos * force_width;
                 last_base_shaped_x = shaped_x;
                 last_base_actual_x = glyph.position.x;
                 glyph_pos += 1;
