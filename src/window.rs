@@ -2941,7 +2941,14 @@ impl AppWindow {
             }
             // ---- agents
             "agent.focus" => {
-                let t = Self::arg(a, "terminal").unwrap_or_default().to_owned();
+                let index = a.get("index").and_then(Value::as_u64);
+                let t = match index {
+                    Some(i) => match (i as usize).checked_sub(1).and_then(|i| self.agent_order().into_iter().nth(i)) {
+                        Some(t) => t,
+                        None => return self.fail("no such agent"),
+                    },
+                    None => Self::arg(a, "terminal").unwrap_or_default().to_owned(),
+                };
                 if !self.live.contains_key(&t) {
                     return self.fail(format!("no running terminal {t:?}"));
                 }

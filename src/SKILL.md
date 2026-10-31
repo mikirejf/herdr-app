@@ -35,6 +35,7 @@ herdr-app do space.new --name api --folder /path/to/api
 herdr-app do tab.new --name "fix login" --argv '["claude"]' --task "Look at the login bug"
 herdr-app do pane.split --direction right --pane p12
 herdr-app do agent.focus --terminal t7
+herdr-app do agent.focus --index 2   # the second agent in the agents list
 ```
 
 For a remote space:

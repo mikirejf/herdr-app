@@ -177,7 +177,7 @@ export default class Agents extends View {
     const on = k.address === shown;
     return h_flex()
       .id(`sub-${k.address}`)
-      .pl(39)
+      .pl(52)
       .pr(8)
       .rounded(8)
       .h(26)
@@ -228,10 +228,12 @@ export default class Agents extends View {
     const rest = list.filter((a) => !this.pins.includes(a.address));
     list = [...pinned, ...rest];
     setAgentOrder(list.map((a) => a.address));
+    // Its agent.focus index, the number cmd+N goes by.
+    const position = new Map(list.map((a, i) => [a.address, i + 1]));
 
     const withKids = (a, i) => {
       const subs = collapsed ? [] : this.tree(all, a.address);
-      const r = row(a, i, subs);
+      const r = row(a, subs);
       if (this.folded.has(a.address)) return [r];
       return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority))];
     };
@@ -277,7 +279,8 @@ export default class Agents extends View {
       if (detail.get(a.address) == null && seen[`${a.space_name}\u0000`] > 1) detail.set(a.address, label(a));
     }
 
-    const row = (a, i, subs = []) => {
+    const row = (a, subs = []) => {
+      const n = position.get(a.address);
       const pic = icon(a.program, 16, t.foreground);
       const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
@@ -292,7 +295,7 @@ export default class Agents extends View {
           .gap(4)
           .hover((s) => s.bg(t.hover))
           .on_click(() => run("pane.focus", { pane: a.pane }))
-          .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(i + 1)))
+          .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(n)))
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
       }
       const when = this.since(a);
@@ -321,7 +324,8 @@ export default class Agents extends View {
       const name = full ? a.space_name || label(a) : more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
       return h_flex()
         .id(`ag-${a.address}`)
-        .px(8)
+        .pl(4)
+        .pr(8)
         .h(30)
         .flex_none()
         .rounded(8)
@@ -336,6 +340,7 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(() => run("pane.focus", { pane: a.pane }))
+        .child(div().w(8).flex_none().text_right().text_size(10.5).text_color(t.dim).child(n <= 9 ? String(n) : ""))
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();
