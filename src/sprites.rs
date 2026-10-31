@@ -80,6 +80,12 @@ fn blocks(c: char) -> Option<(Vec<[f32; 4]>, f32)> {
 /// the fallback may draw nothing.
 const RECORD: char = '\u{23FA}';
 
+/// Box drawing and block elements, which a terminal may take from the font instead.
+pub fn is_box(text: &str) -> bool {
+    let mut chars = text.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if lines(c).is_some() || blocks(c).is_some())
+}
+
 pub fn is_sprite(text: &str) -> bool {
     let mut chars = text.chars();
     match (chars.next(), chars.next()) {

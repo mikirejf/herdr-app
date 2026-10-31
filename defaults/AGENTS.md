@@ -631,7 +631,10 @@ What's about the user, never a look:
   `adjust-cell-width` / `adjust-cell-height` as a percent; glyphs
   centered), or `terminal-app` (whole points on every screen: advance times
   `cell_width` rounded, like Terminal.app's character spacing; ascent and
-  descent each rounded up, times `line_height`). With `ghostty` or
+  descent each rounded up, times `line_height`; the baseline the rounded
+  descent above the cell's bottom; box drawing and blocks from the font, not
+  drawn to fill the cell; dim text in a color mixed `faint_opacity` of the way
+  from the background, not translucent). With `ghostty` or
   `terminal-app`, that terminal's own numbers match it on any screen and size.
   `faint_opacity`: how opaque dim text is (default `0.6`); `font_thicken`:
   terminal glyph thickening on macOS, `0`..`255` like Ghostty's

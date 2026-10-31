@@ -23,6 +23,12 @@ fn pad() -> (f32, f32) {
     (p[0] * zoom, p[1] * zoom)
 }
 
+/// `a` of `fg` over `bg`, as one opaque color.
+fn mix(fg: Rgb, bg: Rgb, a: f32) -> Rgb {
+    let m = |f: u8, b: u8| (f32::from(f) * a + f32::from(b) * (1.0 - a)).round() as u8;
+    Rgb(m(fg.0, bg.0), m(fg.1, bg.1), m(fg.2, bg.2))
+}
+
 pub fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.0 as f32 / 255.0, g: c.1 as f32 / 255.0, b: c.2 as f32 / 255.0, a: 1.0 }.into()
 }
@@ -48,8 +54,8 @@ struct Grid {
     core: Arc<Core>,
     channel: Option<u32>,
     cell: Size<Pixels>,
-    /// How far right of a cell's left edge its glyph starts.
-    glyph_x: Pixels,
+    /// How far glyphs move from where a line drawn at the cell's height puts them.
+    glyph_at: Point<Pixels>,
     /// The window's scale factor, from the last prepaint. Programs see cells,
     /// images and pixel mouse reports in device pixels, as in Ghostty.
     scale: f32,
@@ -75,7 +81,7 @@ struct Grid {
     /// Each row's drawing by position, kept while the row is the same (`Rc`).
     painted: Vec<(Rc<Vec<vt::Cell>>, Vec<RowOp>)>,
     /// The font size, cell size, font and fonts loaded the drawings were built with.
-    painted_with: (u32, Size<Pixels>, String, u64),
+    painted_with: (u32, Size<Pixels>, String, u64, CellGrid),
 }
 
 pub struct TerminalView {
@@ -193,7 +199,7 @@ impl TerminalView {
                 core: core.clone(),
                 channel: None,
                 cell: size(px(9.0), px(18.0)),
-                glyph_x: px(0.0),
+                glyph_at: Point::default(),
                 scale: 1.0,
                 vt_cell: (9, 18),
                 told_display: None,
@@ -205,7 +211,7 @@ impl TerminalView {
                 marked: None,
                 cursor_at: None,
                 painted: Vec::new(),
-                painted_with: (0, Size::default(), String::new(), 0),
+                painted_with: (0, Size::default(), String::new(), 0, CellGrid::Herdr),
             })),
             focus: cx.focus_handle(),
             was_focused: false,
@@ -1010,33 +1016,35 @@ struct Face {
     line_gap: f32,
 }
 
-/// A cell's width and height in logical px, and how far right of its left
-/// edge glyphs start, under `grid`'s rule.
-fn grid_cell(face: Face, grid: CellGrid, cell_width: f32, line_height: f32, scale: f32) -> (f32, f32, f32) {
+/// A cell's width and height in logical px, and how far glyphs move from
+/// where a line drawn at the cell's height puts them (centered ascent +
+/// descent), under `grid`'s rule.
+fn grid_cell(face: Face, grid: CellGrid, cell_width: f32, line_height: f32, scale: f32) -> (f32, f32, f32, f32) {
     match grid {
         // The width isn't rounded to whole pixels (glyphs keep their natural
         // spacing); boxes snap their edges instead (`snap_box`).
-        CellGrid::Herdr => (face.advance * cell_width, ((face.ascent + face.descent) * line_height * scale).ceil() / scale, 0.0),
+        CellGrid::Herdr => (face.advance * cell_width, ((face.ascent + face.descent) * line_height * scale).ceil() / scale, 0.0, 0.0),
         // Ghostty's Metrics.calc: the face rounds to device pixels, then
         // adjust-cell-width/height apply as a percent, rounded again; glyphs
         // sit centered in the cell (coretext.zig).
         CellGrid::Ghostty => {
             let w = ((face.advance * scale).round() * cell_width).round().max(1.0) / scale;
             let h = (((face.ascent + face.descent + face.line_gap) * scale).round() * line_height).round().max(1.0) / scale;
-            (w, h, (w - face.advance) / 2.0)
+            (w, h, (w - face.advance) / 2.0, 0.0)
         }
         // Terminal.app sizes in points on every screen: the advance times
-        // FontWidthSpacing, rounded, and ascent and descent each rounded up.
-        CellGrid::TerminalApp => (
-            (face.advance * cell_width).round().max(1.0),
-            ((face.ascent.ceil() + face.descent.ceil() + face.line_gap) * line_height).round().max(1.0),
-            0.0,
-        ),
+        // FontWidthSpacing, rounded, and ascent and descent each rounded up;
+        // the baseline sits the descent, rounded, above the cell's bottom.
+        CellGrid::TerminalApp => {
+            let h = ((face.ascent.ceil() + face.descent.ceil() + face.line_gap) * line_height).round().max(1.0);
+            let centered = (h - face.ascent - face.descent) / 2.0 + face.ascent;
+            ((face.advance * cell_width).round().max(1.0), h, 0.0, h - face.descent.round() - centered)
+        }
     }
 }
 
-/// The cell size, and the glyphs' offset from each cell's left edge.
-pub fn cell_size(window: &Window) -> (Size<Pixels>, Pixels) {
+/// The cell size, and how far glyphs move from a line's own placement.
+pub fn cell_size(window: &Window) -> (Size<Pixels>, Point<Pixels>) {
     let ts = window.text_system();
     let f = cell_font(false, false);
     let id = ts.resolve_font(&f);
@@ -1048,8 +1056,8 @@ pub fn cell_size(window: &Window) -> (Size<Pixels>, Pixels) {
         descent: f32::from(ts.descent(id, fs)).abs(),
         line_gap: f32::from(ts.line_gap(id, fs)),
     };
-    let (w, h, dx) = grid_cell(face, settings.cell_grid, settings.cell_width, settings.line_height, window.scale_factor());
-    (size(px(w), px(h)), px(dx))
+    let (w, h, dx, dy) = grid_cell(face, settings.cell_grid, settings.cell_width, settings.line_height, window.scale_factor());
+    (size(px(w), px(h)), point(px(dx), px(dy)))
 }
 
 /// One piece of a row's drawing, in cells from the row's start.
@@ -1064,7 +1072,14 @@ enum RowOp {
 /// text in runs of one style (wide characters, sprites and icons on their own).
 fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, window: &mut Window) -> Vec<RowOp> {
     crate::bench::count(&crate::bench::ROWS);
-    let faint = crate::settings::get().faint_opacity;
+    let settings = crate::settings::get();
+    let faint = settings.faint_opacity;
+    // Terminal.app draws box and block characters from the font, and dim
+    // text in a color mixed toward the background rather than translucent,
+    // so macOS thickens it like any text of that darker color.
+    let terminal_app = settings.cell_grid == CellGrid::TerminalApp;
+    let sprite = |t: &str| crate::sprites::is_sprite(t) && !(terminal_app && crate::sprites::is_box(t));
+    let theme_bg = vt::theme().bg;
     let mut ops = Vec::new();
     let mut x = 0;
     while x < row.len() {
@@ -1089,10 +1104,12 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, window: &mut Window) -> Vec<Row
             continue;
         }
         let mut color = hsla(c.fg);
-        if c.faint {
+        if c.faint && terminal_app {
+            color = hsla(mix(c.fg, c.bg.unwrap_or(theme_bg), faint));
+        } else if c.faint {
             color.a = faint;
         }
-        if crate::sprites::is_sprite(&c.text) {
+        if sprite(&c.text) {
             ops.push(RowOp::Sprite { x: start, text: c.text.clone(), color });
             continue;
         }
@@ -1127,7 +1144,7 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, window: &mut Window) -> Vec<Row
                     && d.underline == c.underline
                     && d.strike == c.strike;
                 // A missing icon breaks the run too; the next outer pass draws it as text.
-                if !same || (d.text.is_empty() && !d.underline && !d.strike) || crate::sprites::is_sprite(&d.text) || is_icon(&d.text) {
+                if !same || (d.text.is_empty() && !d.underline && !d.strike) || sprite(&d.text) || is_icon(&d.text) {
                     break;
                 }
                 text.push_str(if d.text.is_empty() { " " } else { &d.text });
@@ -1155,7 +1172,7 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, window: &mut Window) -> Vec<Row
 fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, window: &mut Window, cx: &mut App) {
     crate::bench::count(&crate::bench::GRID);
     let mut g = grid.borrow_mut();
-    let (cell, glyph_x) = (g.cell, g.glyph_x);
+    let (cell, glyph_at) = (g.cell, g.glyph_at);
     let (pad_x, pad_y) = pad();
     // Rows rarely fill the height exactly: split what's left above and below.
     let spare = (f32::from(bounds.size.height) - 2.0 * pad_y - f32::from(cell.height) * g.vt.rows as f32).max(0.0);
@@ -1215,7 +1232,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
     // Each row's drawing is built once and painted again while the row is the
     // same (`Vt::frame` keeps a row libghostty didn't change): an agent's spinner
     // line rebuilds one row, not the whole screen.
-    let with = (crate::settings::font_size().to_bits(), cell, crate::settings::terminal_font(), crate::settings::fonts_added());
+    let with = (crate::settings::font_size().to_bits(), cell, crate::settings::terminal_font(), crate::settings::fonts_added(), crate::settings::get().cell_grid);
     // When every row changed (output scrolling), nothing is kept: the next
     // frame would find none of them the same.
     let mut painted = std::mem::take(&mut grid.borrow_mut().painted);
@@ -1250,7 +1267,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
                     let _ = window.paint_glyph(at(*x, y) + *offset, *font, *glyph, *size, *color);
                 }
                 RowOp::Text { x, line } => {
-                    let _ = line.paint(at(*x, y) + point(glyph_x, px(0.0)), cell.height, TextAlign::Left, None, window, cx);
+                    let _ = line.paint(at(*x, y) + glyph_at, cell.height, TextAlign::Left, None, window, cx);
                 }
             }
         }
@@ -1289,7 +1306,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
                         strikethrough: None,
                     };
                     let line = window.text_system().shape_line(c.text.clone().into(), px(crate::settings::font_size()), &[run], None);
-                    let _ = line.paint(p + point(glyph_x, px(0.0)), cell.height, TextAlign::Left, None, window, cx);
+                    let _ = line.paint(p + glyph_at, cell.height, TextAlign::Left, None, window, cx);
                 }
             }
             (true, CursorShape::Bar) => window.paint_quad(fill(snap_box(Bounds::new(p, size(px(2.0), cell.height))), color)),
@@ -1387,7 +1404,7 @@ impl Render for TerminalView {
                 g.core.focus(ch, focused);
             }
         }
-        let (cell, glyph_x) = cell_size(window);
+        let (cell, glyph_at) = cell_size(window);
         let hover = self.grid.borrow().hover;
         let found = hover.filter(|_| link_mods(&window.modifiers())).and_then(|pos| self.link_at(pos));
         let (link, spans) = found.unzip();
@@ -1471,7 +1488,7 @@ impl Render for TerminalView {
                     move |bounds, window, _cx| {
                         let mut g = grid.borrow_mut();
                         g.cell = cell;
-                        g.glyph_x = glyph_x;
+                        g.glyph_at = glyph_at;
                         g.scale = window.scale_factor();
                         let dev = device_cell(cell, g.scale);
                         // Before the size, so a program woken by it asks for the new cell.
@@ -1947,27 +1964,51 @@ mod tests {
     #[test]
     fn cells_follow_each_grids_rounding_at_every_scale() {
         use crate::settings::CellGrid;
-        let near = |got: (f32, f32, f32), want: (f32, f32, f32)| {
-            assert!((got.0 - want.0).abs() < 1e-4 && (got.1 - want.1).abs() < 1e-4 && (got.2 - want.2).abs() < 1e-4, "{got:?} != {want:?}");
+        let near = |got: (f32, f32, f32, f32), want: (f32, f32, f32, f32)| {
+            let d = [got.0 - want.0, got.1 - want.1, got.2 - want.2, got.3 - want.3];
+            assert!(d.iter().all(|v| v.abs() < 1e-3), "{got:?} != {want:?}");
         };
         let face = |advance, ascent, descent| super::Face { advance, ascent, descent, line_gap: 0.0 };
         // Ghostty with JetBrains Mono and adjust-cell-width = 0.4%, measured:
         // 8 x 18 at 1x, 17 x 37 device px at 2x.
         let jbm14 = face(8.4, 14.28, 4.2);
-        near(super::grid_cell(jbm14, CellGrid::Ghostty, 1.004, 1.0, 1.0), (8.0, 18.0, -0.2));
-        near(super::grid_cell(jbm14, CellGrid::Ghostty, 1.004, 1.0, 2.0), (8.5, 18.5, 0.05));
-        near(super::grid_cell(face(9.6, 16.32, 4.8), CellGrid::Ghostty, 1.004, 1.0, 1.0), (10.0, 21.0, 0.2));
-        // Terminal.app with SF Mono and FontWidthSpacing 1.004, measured at
-        // 13, 14 and 18 pt: the same points at 1x and 2x.
-        let sf14 = face(8.654, 13.33, 3.377);
-        for scale in [1.0, 2.0] {
-            near(super::grid_cell(sf14, CellGrid::TerminalApp, 1.004, 1.0, scale), (9.0, 18.0, 0.0));
-        }
-        near(super::grid_cell(face(8.036, 12.378, 3.136), CellGrid::TerminalApp, 1.004, 1.0, 2.0), (8.0, 17.0, 0.0));
-        near(super::grid_cell(face(11.127, 17.139, 4.342), CellGrid::TerminalApp, 1.004, 1.0, 2.0), (11.0, 23.0, 0.0));
+        near(super::grid_cell(jbm14, CellGrid::Ghostty, 1.004, 1.0, 1.0), (8.0, 18.0, -0.2, 0.0));
+        near(super::grid_cell(jbm14, CellGrid::Ghostty, 1.004, 1.0, 2.0), (8.5, 18.5, 0.05, 0.0));
+        near(super::grid_cell(face(9.6, 16.32, 4.8), CellGrid::Ghostty, 1.004, 1.0, 1.0), (10.0, 21.0, 0.2, 0.0));
         // Herdr's own: the advance as is, the height rounded up to device px.
-        near(super::grid_cell(jbm14, CellGrid::Herdr, 1.0, 1.15, 1.0), (8.4, 22.0, 0.0));
-        near(super::grid_cell(jbm14, CellGrid::Herdr, 1.0, 1.15, 2.0), (8.4, 21.5, 0.0));
+        near(super::grid_cell(jbm14, CellGrid::Herdr, 1.0, 1.15, 1.0), (8.4, 22.0, 0.0, 0.0));
+        near(super::grid_cell(jbm14, CellGrid::Herdr, 1.0, 1.15, 2.0), (8.4, 21.5, 0.0, 0.0));
+    }
+
+    #[test]
+    fn terminal_app_cells_and_baselines_match_measurements() {
+        use crate::settings::CellGrid;
+        // Terminal.app with SF Mono and FontWidthSpacing 1.004, measured per
+        // point size: (size, cell width, cell height, baseline from the top).
+        // 13, 14 and 18 pt were also measured at 2x: the same points.
+        let measured = [
+            (9, 6, 12, 10), (10, 6, 13, 11), (11, 7, 14, 11), (12, 7, 15, 12), (13, 8, 17, 14),
+            (14, 9, 18, 15), (15, 9, 19, 15), (16, 10, 20, 16), (17, 11, 22, 18), (18, 11, 23, 19),
+            (20, 12, 25, 20), (22, 14, 27, 22), (24, 15, 29, 23), (28, 17, 34, 27), (32, 20, 39, 31),
+        ];
+        for (pt, w, h, base) in measured {
+            let pt = pt as f32;
+            // SF Mono's advance, ascent and descent per point.
+            let face = super::Face { advance: 0.618_16 * pt, ascent: 0.952_15 * pt, descent: 0.241_21 * pt, line_gap: 0.0 };
+            for scale in [1.0, 2.0] {
+                let (gw, gh, dx, dy) = super::grid_cell(face, CellGrid::TerminalApp, 1.004, 1.0, scale);
+                let baseline = (gh - face.ascent - face.descent) / 2.0 + face.ascent + dy;
+                assert_eq!((gw, gh, dx), (w as f32, h as f32, 0.0), "{pt} pt");
+                assert!((baseline - base as f32).abs() < 1e-3, "{pt} pt: baseline {baseline}, measured {base}");
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_app_dims_by_mixing_toward_the_background() {
+        use crate::vt::Rgb;
+        assert_eq!(super::mix(Rgb(255, 255, 255), Rgb(30, 30, 30), 0.47), Rgb(136, 136, 136));
+        assert_eq!(super::mix(Rgb(200, 0, 100), Rgb(0, 0, 0), 1.0), Rgb(200, 0, 100));
     }
 
     #[test]
