@@ -22,10 +22,13 @@ export default class WorkspaceStatus extends View {
     const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
     // A multi-key shortcut is half typed (ctrl-b, waiting for z): as Herdr's PREFIX mode.
     const pending = window()?.pending_keys ?? [];
+    const zoomed = space?.tabs.find(tb => tb.active)?.zoomed;
+    const badge = text => div().px(6).rounded(3).bg(t.accent).text_color(t.chrome).font_weight(700).child(text);
     return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8).text_color(t.muted)
       .when(pending.length > 0, el => el.child(h_flex().gap(6).items_center()
-        .child(div().px(6).rounded(3).bg(t.accent).text_color(t.chrome).font_weight(700).child("PREFIX"))
+        .child(badge("PREFIX"))
         .child(div().text_color(t.foreground).child(pending.join(" ")))))
+      .when(Boolean(zoomed), el => el.child(badge("ZOOM")))
       .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
       .when(Boolean(space?.branch), el => el.child(label("branch", space.branch)))
       .child(h_flex().gap(6).items_center().child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} agents`)
