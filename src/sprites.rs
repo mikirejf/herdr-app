@@ -123,7 +123,12 @@ pub fn paint(text: &str, cell: Bounds<Pixels>, color: Hsla, window: &mut Window)
     let Some(dirs) = lines(c) else { return };
     let light = (w / 8.0).round().max(1.0 / scale);
     let thick = |k: u8| if k == 2 { light * 2.0 } else { light };
-    let (cx, cy) = (snap(x + w / 2.0), snap(y + h / 2.0));
+    // A line t thick starts floor((cell - t) / 2) device pixels into the
+    // cell, as in Ghostty's box drawing: on an even cell with an odd line,
+    // the spare pixel goes right and below.
+    let (x0, x1, y0, y1) = (snap(x), snap(x + w), snap(y), snap(y + h));
+    let mid = |a: f32, b: f32, t: f32| a + (((b - a - t) * scale).round() / 2.0).floor() / scale;
+    let (cx, cy) = (mid(x0, x1, light) + light / 2.0, mid(y0, y1, light) + light / 2.0);
     // Where a line along an arm starts, measured from the center toward the
     // arm: `before` and `after` are the crossing arms on this line's side and
     // the other side. Negative reaches past the center so joins close.
@@ -156,9 +161,11 @@ pub fn paint(text: &str, cell: Bounds<Pixels>, color: Hsla, window: &mut Window)
             let from = c + sign * near;
             let (a0, a1) = if sign > 0.0 { (from, edge) } else { (edge, from) };
             if horizontal {
-                rect(a0, cy + off - t / 2.0, a1, cy + off + t / 2.0, color);
+                let top = mid(y0, y1, t) + off;
+                rect(a0, top, a1, top + t, color);
             } else {
-                rect(cx + off - t / 2.0, a0, cx + off + t / 2.0, a1, color);
+                let left = mid(x0, x1, t) + off;
+                rect(left, a0, left + t, a1, color);
             }
         }
     }

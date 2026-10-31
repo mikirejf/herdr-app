@@ -319,7 +319,7 @@ layout's look and a block can differ:
 - `font` / `font_size`: the terminals' (px at zoom 1); `ui_font`: the mods'
   (their text sizes are their own, in px, and follow zoom). Optional: without
   them a layout uses settings.json's, else Herdr's (JetBrains Mono 14, Geist).
-  `cell_width`, `line_height`, `faint_opacity`, `font_thicken` work the
+  `cell_grid`, `cell_width`, `line_height`, `faint_opacity`, `font_thicken` work the
   same way (see settings.json below); a clone of main with its own values
   gives a second terminal look that `layout.switch` flips to.
   Herdr (main) leaves these unset; Terminals sets text size 15, and Herdr 98
@@ -624,14 +624,23 @@ What's about the user, never a look:
   own. Herdr (main) leaves these unset. Bigger panels: `zoom`.
 - `cell_width`: terminal cell width times the font's advance (default `1`);
   `line_height`: line height times the font's ascent + descent (default
-  `1.15`, rounded up to whole pixels); `faint_opacity`: how opaque dim text
-  is (default `0.6`); `font_thicken`: terminal glyph thickening on macOS,
-  `0`..`255` like Ghostty's `font-thicken-strength` (unset: macOS's own,
-  heavier for brighter text). A layout's look sets these too and wins.
-  macOS Terminal.app with SF Mono 14:
-  `{ "cell_width": 1.04, "line_height": 1.07, "faint_opacity": 0.47 }`.
-  Ghostty's built-in JetBrains Mono 14 (font `JetBrainsMono Nerd Font`):
-  `{ "cell_width": 0.954, "line_height": 0.97, "faint_opacity": 0.5, "font_thicken": 64 }`.
+  `1.15`); `cell_grid`: whose rule rounds the cell to pixels: `herdr`
+  (default: width as is, height rounded up to device pixels), `ghostty`
+  (advance and line height rounded to device pixels, then times
+  `cell_width` / `line_height` and rounded again, like Ghostty's
+  `adjust-cell-width` / `adjust-cell-height` as a percent; glyphs
+  centered), or `terminal-app` (whole points on every screen: advance times
+  `cell_width` rounded, like Terminal.app's character spacing; ascent and
+  descent each rounded up, times `line_height`). With `ghostty` or
+  `terminal-app`, that terminal's own numbers match it on any screen and size.
+  `faint_opacity`: how opaque dim text is (default `0.6`); `font_thicken`:
+  terminal glyph thickening on macOS, `0`..`255` like Ghostty's
+  `font-thicken-strength` (unset: macOS's own, heavier for brighter text).
+  A layout's look sets these too and wins. macOS Terminal.app (SF Mono 14,
+  spacing 1.004):
+  `{ "cell_grid": "terminal-app", "cell_width": 1.004, "faint_opacity": 0.47 }`.
+  Ghostty with `adjust-cell-width = 0.4%` (its built-in font: `JetBrainsMono Nerd Font`):
+  `{ "cell_grid": "ghostty", "cell_width": 1.004, "line_height": 1, "faint_opacity": 0.5, "font_thicken": 64 }`.
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
 - `colors`: theme color overrides (`{"accent":"#ff8800"}`), with the same
