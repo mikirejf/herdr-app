@@ -5987,9 +5987,16 @@ impl Window {
             currently_pending.keystrokes = match_result.pending;
             currently_pending.focus = self.focus;
 
+            // The timeout lets a printable prefix ("j" of "j j") still type. A key held with
+            // ctrl, cmd or fn isn't typing, even when the platform reports text for it
+            // (macOS gives ctrl-space " "), so such a prefix waits for its next key.
             let text_input_requires_timeout = event
                 .downcast_ref::<KeyDownEvent>()
-                .filter(|key_down| key_down.keystroke.key_char.is_some())
+                .filter(|key_down| {
+                    let modifiers = key_down.keystroke.modifiers;
+                    key_down.keystroke.key_char.is_some()
+                        && !(modifiers.control || modifiers.platform || modifiers.function)
+                })
                 .and_then(|_| self.platform_window.take_input_handler())
                 .map_or(false, |mut input_handler| {
                     let accepts = input_handler.accepts_text_input(self, cx);
