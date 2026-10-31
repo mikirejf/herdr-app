@@ -892,7 +892,7 @@ mod tests {
         let main: Node = serde_json::from_str(include_str!("../defaults/layouts/main.json")).unwrap();
         assert!(main.look.theme.is_none() && main.look.colors.is_none() && main.look.font.is_none() && main.look.font_size.is_none() && main.look.ui_font.is_none());
         assert_eq!(Settings::compose(&Person::default(), &main.look, true).font_size, 14.0);
-        assert_eq!(main.look.terminal_padding, Some([14.0, 12.0]));
+        assert_eq!(main.look.terminal_padding, Some([4.0, 4.0]));
         let terminals: Node = serde_json::from_str(include_str!("../defaults/layouts/terminals.json")).unwrap();
         assert_eq!(Settings::compose(&person, &terminals.look, true).font_size, 15.0);
         let main_settings = Settings::compose(&person, &main.look, true);
