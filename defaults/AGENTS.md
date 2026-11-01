@@ -613,7 +613,9 @@ The main ones:
   Pages are http, https or about:blank. Every browser uses the person's own profile
   (cookies and sign-ins included), and `agent-browser` can drive any of them with no
   prompt, every tab of the pane (`agent-browser tab`, `tab new [url]`, `tab t2`, `tab close`; a popup
-  is picked up as it opens). `herdr-app ls` and `browsers()` show a page's full url and title.
+  is picked up as it opens). An agent-browser command from a terminal whose tab and space have no
+  browser opens an empty one to the right of that terminal's pane (focus stays where it was) and
+  uses it, so agents need no `browser.open` first. `herdr-app ls` and `browsers()` show a page's full url and title.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {index | terminal}` (index: position in
   the agents list, 1 = first; the agents mod numbers its first nine rows).
 - Layout: `layout.switch {name?}`, `layout.toggle {id}`, `layout.show {id}`, `layout.hide {id}`,

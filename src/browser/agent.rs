@@ -104,9 +104,8 @@ pub fn needs_own_session(terminal: &str) -> String {
         own_session(terminal)
     )
 }
-pub fn no_browser() -> String {
-    "no browser in this space: open one with: herdr-app do browser.open --url <url>".into()
-}
+/// What `herdr.check` says when the caller has no browser: a launch opens one.
+pub const NO_BROWSER_YET: &str = "no browser here yet: agent-browser will open one beside this terminal";
 pub fn ambiguous(browsers: &[&str]) -> String {
     // agent-browser's daemon reads the provider's environment once, when it
     // starts (often on the command that got this error), so a new
@@ -139,31 +138,32 @@ pub struct Caller<'a> {
 /// The browser an agent in `caller` means, and how it was chosen:
 /// `HERDR_BROWSER` (within the caller's space, or a layout block), else the
 /// only browser in the caller's tab, else the one in its space the person
-/// focused last, else the only one in its space. DevTools windows are never
-/// browsers here.
-pub fn select<'a>(caller: &Caller, all: &[Candidate<'a>]) -> Result<(&'a str, &'static str), String> {
+/// focused last, else the only one in its space; `Ok(None)`: none at all, which a
+/// launch answers by opening one (`AppWindow::attach_agent`). DevTools windows
+/// are never browsers here.
+pub fn select<'a>(caller: &Caller, all: &[Candidate<'a>]) -> Result<Option<(&'a str, &'static str)>, String> {
     if let Some(w) = caller.wanted {
         return all
             .iter()
             .find(|c| c.browser == w && c.space.is_none_or(|s| s == caller.space))
-            .map(|c| (c.browser, "HERDR_BROWSER"))
+            .map(|c| Some((c.browser, "HERDR_BROWSER")))
             .ok_or_else(|| format!("HERDR_BROWSER={w} is not a browser in this terminal's space: see `herdr-app ls`"));
     }
     let in_space: Vec<&Candidate> = all.iter().filter(|c| c.space == Some(caller.space)).collect();
     let in_tab: Vec<&Candidate> = in_space.iter().copied().filter(|c| c.tab == Some(caller.tab)).collect();
     match in_tab.as_slice() {
-        [one] => return Ok((one.browser, "tab")),
+        [one] => return Ok(Some((one.browser, "tab"))),
         [] => {}
         many => return Err(ambiguous(&many.iter().map(|c| c.browser).collect::<Vec<_>>())),
     }
     match in_space.as_slice() {
-        [] => Err(no_browser()),
-        [one] => Ok((one.browser, "space")),
+        [] => Ok(None),
+        [one] => Ok(Some((one.browser, "space"))),
         many => {
             let top = many.iter().map(|c| c.focused_at).max().unwrap_or(0);
             let recent: Vec<&&Candidate> = many.iter().filter(|c| c.focused_at == top).collect();
             match recent.as_slice() {
-                [one] if top > 0 => Ok((one.browser, "recent")),
+                [one] if top > 0 => Ok(Some((one.browser, "recent"))),
                 _ => Err(ambiguous(&many.iter().map(|c| c.browser).collect::<Vec<_>>())),
             }
         }
@@ -1093,7 +1093,8 @@ pub fn with_herdr_plugin(existing: &str, exe: &str, socket: &str) -> Result<Stri
 
 /// The provider's answer to one agent-browser request. `attach` asks the
 /// window (`{ attach: { terminal, session, browser } }`); it is never
-/// called outside a Herdr terminal. Panes are never created here.
+/// called outside a Herdr terminal. The window opens the pane a launch needs
+/// (`check`: it never does); this process creates nothing.
 pub fn respond(request: &Value, env: &dyn Fn(&str) -> Option<String>, attach: impl FnOnce(Value) -> Result<Value, String>) -> Value {
     let fail = |e: String| json!({ "protocol": PROTOCOL, "success": false, "error": e });
     if request.get("protocol").and_then(Value::as_str) != Some(PROTOCOL) {
@@ -1109,6 +1110,8 @@ pub fn respond(request: &Value, env: &dyn Fn(&str) -> Option<String>, attach: im
             let Some(terminal) = env("HC_TERMINAL_ID").filter(|t| !t.is_empty()) else { return fail(not_in_herdr()) };
             let browser = env("HERDR_BROWSER").filter(|b| !b.is_empty());
             match attach(json!({ "terminal": terminal, "session": null, "browser": browser, "check": true })) {
+                // No browser yet is no failure: a launch opens one beside the terminal.
+                Ok(r) if r["browser"].is_null() => json!({ "protocol": PROTOCOL, "success": true, "data": { "browser": null, "selection": null, "ready": false, "note": NO_BROWSER_YET } }),
                 Ok(r) => json!({ "protocol": PROTOCOL, "success": true, "data": { "browser": r["browser"], "selection": r["selection"], "ready": true } }),
                 Err(e) => fail(e),
             }
@@ -1274,14 +1277,15 @@ mod tests {
     fn the_callers_tab_wins_then_the_most_recently_focused_in_the_space() {
         let caller = Caller { space: "sp1", tab: "tb1", wanted: None };
         let all = [cand("b1", Some("tb2"), 50), cand("b2", Some("tb1"), 0)];
-        assert_eq!(select(&caller, &all), Ok(("b2", "tab")));
+        assert_eq!(select(&caller, &all), Ok(Some(("b2", "tab"))));
         let all = [cand("b1", Some("tb2"), 50), cand("b3", Some("tb3"), 90)];
-        assert_eq!(select(&caller, &all), Ok(("b3", "recent")));
+        assert_eq!(select(&caller, &all), Ok(Some(("b3", "recent"))));
         let all = [cand("b1", Some("tb2"), 0)];
-        assert_eq!(select(&caller, &all), Ok(("b1", "space")));
+        assert_eq!(select(&caller, &all), Ok(Some(("b1", "space"))));
         // Another space's browser is never picked.
         let other = Candidate { space: Some("sp2"), ..cand("b9", Some("tbx"), 99) };
-        assert_eq!(select(&caller, &[other]).unwrap_err(), no_browser());
+        assert_eq!(select(&caller, &[other]), Ok(None));
+        assert_eq!(select(&caller, &[]), Ok(None));
     }
 
     #[test]
@@ -1297,13 +1301,13 @@ mod tests {
     fn herdr_browser_overrides_within_the_callers_space_only() {
         let all = [cand("b1", Some("tb1"), 0), cand("b2", Some("tb2"), 0), Candidate { space: Some("sp2"), ..cand("b3", Some("tb9"), 0) }];
         let caller = Caller { space: "sp1", tab: "tb1", wanted: Some("b2") };
-        assert_eq!(select(&caller, &all), Ok(("b2", "HERDR_BROWSER")));
+        assert_eq!(select(&caller, &all), Ok(Some(("b2", "HERDR_BROWSER"))));
         let caller = Caller { space: "sp1", tab: "tb1", wanted: Some("b3") };
         assert_eq!(select(&caller, &all).unwrap_err(), "HERDR_BROWSER=b3 is not a browser in this terminal's space: see `herdr-app ls`");
         // A layout block shows on every space: the override may name it.
         let layout = Candidate { space: None, tab: None, ..cand("side", None, 0) };
         let caller = Caller { space: "sp1", tab: "tb1", wanted: Some("side") };
-        assert_eq!(select(&caller, &[layout]), Ok(("side", "HERDR_BROWSER")));
+        assert_eq!(select(&caller, &[layout]), Ok(Some(("side", "HERDR_BROWSER"))));
     }
 
     #[test]
@@ -1312,7 +1316,7 @@ mod tests {
         assert_eq!(no_app("/h/herdr-app.sock"), "Herdr is not running (no socket at /h/herdr-app.sock)");
         assert_eq!(parked("t4"), "terminal t4 has no pane in Herdr (parked): give it one with herdr-app do terminal.keep --terminal t4");
         assert_eq!(remote("m1/t4"), "terminal m1/t4 runs on another machine: browser panes are only for this machine's terminals");
-        assert_eq!(no_browser(), "no browser in this space: open one with: herdr-app do browser.open --url <url>");
+        assert_eq!(NO_BROWSER_YET, "no browser here yet: agent-browser will open one beside this terminal");
         assert_eq!(
             ambiguous(&["b1", "b2"]),
             "two or more browsers here (b1, b2): run `export HERDR_BROWSER=<id> AGENT_BROWSER_SESSION=$AGENT_BROWSER_SESSION-<id>`, then agent-browser again (a running agent-browser session keeps the environment it started with)"
@@ -1964,8 +1968,8 @@ mod tests {
             "AGENT_BROWSER_SESSION" => Some("herdr-abc".to_owned()),
             _ => None,
         };
-        let out = respond(&launch(), &env, |_| Err(no_browser()));
-        assert_eq!(out["error"], no_browser());
+        let out = respond(&launch(), &env, |_| Err(parked("t3")));
+        assert_eq!(out["error"], parked("t3"));
         assert_eq!(out["success"], false);
     }
 
@@ -2026,10 +2030,15 @@ mod tests {
         let mut asked = Value::Null;
         let out = respond(&check, &env, |req| {
             asked = req;
-            Err(no_browser())
+            Ok(json!({ "browser": null, "selection": null }))
         });
         assert_eq!(asked["check"], true);
-        assert_eq!(out, json!({ "protocol": PROTOCOL, "success": false, "error": no_browser() }));
+        assert_eq!(
+            out,
+            json!({ "protocol": PROTOCOL, "success": true, "data": { "browser": null, "selection": null, "ready": false, "note": "no browser here yet: agent-browser will open one beside this terminal" } })
+        );
+        let out = respond(&check, &env, |_| Err(ambiguous(&["b1", "b2"])));
+        assert_eq!(out, json!({ "protocol": PROTOCOL, "success": false, "error": ambiguous(&["b1", "b2"]) }));
         let out = respond(&check, &env, |_| Ok(json!({ "browser": "b1", "selection": "tab" })));
         assert_eq!(out, json!({ "protocol": PROTOCOL, "success": true, "data": { "browser": "b1", "selection": "tab", "ready": true } }));
         assert_eq!(respond(&check, &|_| None, |_| panic!())["error"], not_in_herdr());

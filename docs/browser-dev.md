@@ -265,8 +265,10 @@ How it works: Herdr gives its local terminals `AGENT_BROWSER_PROVIDER=herdr`,
 __agent-browser-provider`, first) and an `AGENT_BROWSER_SESSION` of their
 own. The provider asks the window over the control socket for the caller's
 browser (`HERDR_BROWSER=<id>` picks one in the caller's space; else the
-browser in its tab, else the one in its space the person focused last) and
-gets `ws://127.0.0.1:<port>/<token>`: a 256-bit token for that one pane, with
+browser in its tab, else the one in its space the person focused last; with none, a launch
+opens an empty pane to the right of the caller's own terminal pane, the way `browser.open`
+with `pane` and `place=right` does but keeping the tab's focus, then uses it; `herdr.check` opens
+nothing) and gets `ws://127.0.0.1:<port>/<token>`: a 256-bit token for that one pane, with
 `directPage: false`: the socket is the pane's browser endpoint, with the pane's
 tabs as its page targets. The proxy answers the Target domain itself
 (`Target.setDiscoverTargets`, `getTargets`, `getTargetInfo`, `createTarget`,
@@ -275,7 +277,9 @@ tabs as its page targets. The proxy answers the Target domain itself
 tab of another pane is never named. A target id is the tab's runtime id
 (`b1:3`); a session id is Herdr's own (`HERDR…`), stripped on the way to the
 tab's DevTools session and put back on what comes from it, with
-several sessions per tab allowed. An attach also starts CEF when no page has yet (a fresh app
+several sessions per tab allowed. Control requests reach the window one at a time, and
+the open and the select happen inside one of them, so two agent-browser commands racing in a
+tab open one pane. An attach also starts CEF when no page has yet (a fresh app
 with only an empty browser pane), so the agent's requests are served. Attaching a tab whose page was never created
 creates it, hidden (an empty tab opens at `about:blank`). `createTarget` opens a
 tab after the shown one and shows it, `activateTarget` and `Page.bringToFront`
@@ -349,8 +353,9 @@ alive.
 
 agent-browser hides a provider's error text (`Plugin 'herdr' returned
 success=false`); `agent-browser plugin run herdr herdr.check` says why
-(for example `no browser in this space: open one with: herdr-app do
-browser.open --url <url>`). Terminals started before this build, or by `hc run`, don't
+(for example `two or more browsers here (b1, b2): run export HERDR_BROWSER=…`;
+with no browser at all it succeeds with `ready: false` and the note `no browser here yet:
+agent-browser will open one beside this terminal`, because it opens nothing). Terminals started before this build, or by `hc run`, don't
 have the environment; `AGENT_BROWSER_PROVIDER=` opts a terminal out.
 agent-browser's daemon reads the provider's environment once, when its
 session starts, so to pick another browser run

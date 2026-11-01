@@ -398,22 +398,23 @@ impl Browsers {
     /// The caller's browser and a token url for it (`{ attach }` on the
     /// control socket). `tab_of`: a pane's tab.
     /// `check`: the same choice and checks, no token (`herdr.check`).
-    pub fn attach(&mut self, space: &str, tab: &str, wanted: Option<&str>, check: bool, tab_of: &dyn Fn(&str) -> Option<String>) -> Result<Value, String> {
+    /// `Ok(None)`: the caller's tab and space have no browser.
+    pub fn attach(&mut self, space: &str, tab: &str, wanted: Option<&str>, check: bool, tab_of: &dyn Fn(&str) -> Option<String>) -> Result<Option<Value>, String> {
         let entries: Vec<(&registry::Entry, Option<String>)> =
             self.registry.list().iter().map(|e| (e, e.pane.as_deref().and_then(tab_of))).collect();
         let candidates: Vec<Candidate> = entries
             .iter()
             .map(|(e, t)| Candidate { browser: &e.browser, space: e.space.as_deref(), tab: t.as_deref(), focused_at: e.focused_at })
             .collect();
-        let (browser, how) = agent::select(&Caller { space, tab, wanted }, &candidates)?;
+        let Some((browser, how)) = agent::select(&Caller { space, tab, wanted }, &candidates)? else { return Ok(None) };
         let chosen = candidates.iter().find(|c| c.browser == browser).ok_or("the browser went away")?;
         let (browser, pane, space) = (browser.to_owned(), entries.iter().find(|(e, _)| e.browser == browser).and_then(|(e, _)| e.pane.clone()), chosen.space.map(str::to_owned));
         if check {
-            return Ok(json!({ "browser": browser, "pane": pane, "space": space, "selection": how }));
+            return Ok(Some(json!({ "browser": browser, "pane": pane, "space": space, "selection": how })));
         }
         // The whole pane: the agent sees its tabs, opened or not.
         let url = proxy::attach(&browser, self.pane(&browser).ok_or("the browser went away")?)?;
-        Ok(json!({ "cdpUrl": url, "browser": browser, "pane": pane, "space": space, "selection": how }))
+        Ok(Some(json!({ "cdpUrl": url, "browser": browser, "pane": pane, "space": space, "selection": how })))
     }
 
     /// The pages hidden under an overlay now (they can't have the keyboard).

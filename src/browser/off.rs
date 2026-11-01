@@ -76,7 +76,7 @@ impl Browsers {
         Vec::new()
     }
 
-    pub fn attach(&mut self, _space: &str, _tab: &str, _wanted: Option<&str>, _check: bool, _tab_of: &dyn Fn(&str) -> Option<String>) -> Result<serde_json::Value, String> {
+    pub fn attach(&mut self, _space: &str, _tab: &str, _wanted: Option<&str>, _check: bool, _tab_of: &dyn Fn(&str) -> Option<String>) -> Result<Option<serde_json::Value>, String> {
         Err(UNAVAILABLE.into())
     }
 

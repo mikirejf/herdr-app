@@ -1634,10 +1634,11 @@ impl AppWindow {
     }
 
     /// `{ attach: { terminal, session, browser? } }`: picks the caller's
-    /// browser (`browser::agent::select`) and hands back its token url.
-    /// `terminal` is the caller's claim (`HC_TERMINAL_ID`): a routing hint,
-    /// not an identity.
-    fn attach_agent(&mut self, req: &Value) -> Result<Value, String> {
+    /// browser (`browser::agent::select`) and hands back its token url. A
+    /// caller whose tab and space have no browser gets an empty one beside its
+    /// terminal first (`check` only reports). `terminal` is the caller's
+    /// claim (`HC_TERMINAL_ID`): a routing hint, not an identity.
+    fn attach_agent(&mut self, req: &Value, window: &mut Window, cx: &mut Context<Self>) -> Result<Value, String> {
         let terminal = req.get("terminal").and_then(Value::as_str).filter(|t| !t.is_empty()).ok_or_else(crate::browser::not_in_herdr)?;
         if terminal.contains('/') {
             return Err(crate::browser::remote(terminal));
@@ -1654,15 +1655,39 @@ impl AppWindow {
         }
         let (space, tab) = (space.id.clone(), self.model.tab_of(&pane).map(|t| t.id.clone()).unwrap_or_default());
         let wanted = req.get("browser").and_then(Value::as_str);
-        let tab_of = |p: &str| self.model.tab_of(p).map(|t| t.id.clone());
         let check = req.get("check").and_then(Value::as_bool).unwrap_or(false);
-        let r = self.browsers.attach(&space, &tab, wanted, check, &tab_of);
-        if let Ok(v) = &r
-            && !check
-        {
+        let attach = |this: &mut Self| {
+            let tab_of = |p: &str| this.model.tab_of(p).map(|t| t.id.clone());
+            this.browsers.attach(&space, &tab, wanted, check, &tab_of)
+        };
+        let mut r = attach(self)?;
+        if r.is_none() && !check {
+            // Requests reach here one at a time on the window's thread, so a second
+            // launch from the same tab finds the pane this one opens.
+            self.open_browser_for(&pane, &tab, window, cx)?;
+            r = attach(self)?;
+        }
+        let Some(v) = r else {
+            // Only `herdr.check` gets here: it reports and opens nothing.
+            return if check { Ok(json!({ "browser": null, "selection": null })) } else { Err("the browser went away".into()) };
+        };
+        if !check {
             tracing::info!("browser: agent attach browser={} terminal={} (claimed, unverified) selection={}", crate::browser::log_safe(v["browser"].as_str().unwrap_or("?")), crate::browser::log_safe(terminal), v["selection"].as_str().unwrap_or("?"));
         }
-        r
+        Ok(v)
+    }
+
+    /// `browser.open` with no page to the right of `pane`, leaving the tab's
+    /// focus where the person had it (the new pane takes it otherwise).
+    fn open_browser_for(&mut self, pane: &str, tab: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        let focus = self.model.tab(tab).map(|t| (t.focused.clone(), t.before.clone()));
+        self.open_browser("", "right", Some(pane.to_owned()))?;
+        if let (Some((focused, before)), Some(t)) = (focus, self.model.tab_mut(tab)) {
+            (t.focused, t.before) = (focused, before);
+        }
+        self.sync(window, cx);
+        self.flush_documents(false, window, cx);
+        Ok(())
     }
 
     /// A browser pane's saved tabs follow its pages and the shown tab: it
@@ -3892,7 +3917,7 @@ impl AppWindow {
         // token url for the caller's browser. Only
         // the socket answers this; it is no command, so no mod or key can.
         if let Some(attach) = cmd.get("attach") {
-            return match self.attach_agent(attach) {
+            return match self.attach_agent(attach, window, cx) {
                 // The marker's "last: terminal tN" follows at once.
                 Ok(v) => {
                     // An agent can attach to a pane that never showed a page, so CEF

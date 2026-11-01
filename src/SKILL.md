@@ -134,8 +134,10 @@ agent-browser says `Plugin 'herdr' returned success=false`, run
 before this version or with `hc run` don't have the environment;
 `AGENT_BROWSER_PROVIDER=` opts a terminal out. `HERDR_BROWSER=<id>` picks a
 browser when there are two; agent-browser reads it only when its session
-starts, so export it with a new `AGENT_BROWSER_SESSION` name. Open a browser with
-`herdr-app do browser.open --url <url>` only when asked.
+starts, so export it with a new `AGENT_BROWSER_SESSION` name. When your tab and space
+have no browser, `agent-browser` opens an empty one beside your terminal (the person's
+focus stays where it was) and uses it; you need `herdr-app do browser.open` only to choose where
+it goes. `plugin run herdr herdr.check` opens nothing: with no browser it says `ready: false`.
 The person's zoom and responsive size are `browser.zoom` and `browser.viewport`;
 your own `agent-browser set viewport` / `set device` work too, and the last one
 set wins. `browser.screenshot {browser?, path?}` saves a PNG of the shown tab's page
