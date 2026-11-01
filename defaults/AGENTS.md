@@ -499,7 +499,8 @@ the build doesn't do.
 - Terminal keys honor the program's negotiated Kitty mode, including on Windows.
 - A space makes a key sequence: `"ctrl-b z": "pane.zoom"` is ctrl-b, then z.
   While one is half typed, `window().pending_keys` lists its keys
-  (`["ctrl-b"]`); the status bar shows them as PREFIX. When the first key
+  (`["ctrl-b"]`); the status bar shows PREFIX with what can follow (esc,
+  the prefix again, and the bound resize and keybinds keys). When the first key
   holds ctrl or cmd, a key that doesn't continue the sequence cancels it and
   is dropped (Escape too), and the first key pressed again goes to the
   program once (ctrl-b ctrl-b sends ctrl-b). Plain-letter sequences ("j k")
