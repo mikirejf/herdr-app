@@ -141,12 +141,7 @@ impl Browsers {
             }
             "browser.devtools" => {
                 let open = args.get("open").and_then(Value::as_bool);
-                // `note`: where the engine's inspector opens, if not in a window
-                // of its own (WebKit's is Safari's); the window shows it as a toast.
-                engine::devtools(browser, open).map(|open| match engine::DEVTOOLS_NOTE.filter(|_| open) {
-                    Some(note) => json!({ "browser": browser, "devtools": open, "note": note }),
-                    None => json!({ "browser": browser, "devtools": open }),
-                })
+                engine::devtools(browser, open).map(|open| json!({ "browser": browser, "devtools": open }))
             }
             "browser.zoom" => {
                 let percent = emulate::zoom_target(args, engine::zoom(browser)?)?;

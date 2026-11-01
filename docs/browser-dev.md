@@ -3,9 +3,7 @@
 A browser pane shows a real Chromium page in a block: CEF (the Chromium
 Embedded Framework) in windowed mode, one native view per page over the
 window. It's behind the Cargo feature `browser`, off by default; other
-builds show a placeholder where a browser block is. The same pane can run
-on the system's WKWebView instead, with no Chromium in the app:
-[the WebKit engine](#the-webkit-engine-no-chromium).
+builds show a placeholder where a browser block is.
 
 What the prototype is for, what it asks of the core, its measured size and
 signing, and its main gaps: [browser-prototype.md](browser-prototype.md).
@@ -41,60 +39,6 @@ To build by hand:
 CEF_PATH=~/.cache/herdr-app/cef CEF_DOWNLOAD_URL=https://cef-builds.spotifycdn.com \
   cargo build --features browser --bin herdr-helper --bin herdr-app
 ```
-
-### The WebKit engine (no Chromium)
-
-The `browser-webkit` feature builds the same pane, bar, commands, consent,
-token proxy and agent provider on the system's WKWebView instead of CEF
-(`src/browser/webkit.rs`). WebKit is part of macOS, so there is nothing to
-download, no `CEF_PATH`, no helper apps, and the bundle is the app alone.
-Each engine feature turns on `browser-pane`, the engine-neutral rest; build
-with one of them, not both.
-
-```sh
-just browser-build --webkit   # target/browser-dev-webkit/Herdr Dev.app
-just browser-dev --webkit     # the same, run on its own home (FRESH=1 for a scratch one)
-cargo build --features browser-webkit --bin herdr-app   # `cargo run` works too
-```
-
-Agents drive it through the same proxy: the token, the dialog, the
-allowlist and revocation are unchanged. Behind the proxy, a translator
-(`src/browser/translate.rs`, `src/browser/webkit.js`) answers the CDP calls
-agent-browser makes from WebKit: script in an isolated content world for
-the DOM and the accessibility tree, `NSEvent`s sent to the view for trusted
-clicks and keys, `takeSnapshot` for screenshots. A method it doesn't map
-answers "wasn't found". An agent's script is never evaluated from a
-string: it goes into the script WebKit runs, so a page whose
-Content-Security-Policy forbids `eval` (github.com,
-`scripts/browser-csp-fixture.html`) still answers `eval`, `get title` and
-`back`. A statement list runs as a script and returns its last value by
-value only. WebKit hands a key the page didn't handle back to the app;
-for an agent's key, the window's event monitor drops it, so it never
-reaches a terminal, a keys.json action or a menu. Gaps against CEF:
-
-- **No network events for agents.** WebKit has no per-request API, so
-  `network requests`, HAR and `route` see nothing.
-- **Viewport is size only.** `browser.viewport` lays the page out at the
-  preset's or the given size in CSS pixels; pixel ratio, mobile and touch
-  emulation are CEF-only (WebKit has no public API for them).
-- **Zoom is per pane** (WebKit's `pageZoom`), not per site.
-- **DevTools are Safari's.** `browser.devtools` makes the page inspectable
-  and a toast says where: Safari's Develop menu, with "Show features for web
-  developers" on. Nothing opens in Herdr, and no port opens.
-- **The accessibility tree is built in script**: common HTML roles and a
-  subset of the ARIA name rules. Frames aren't expanded and closed shadow
-  roots aren't seen; real sites may get thinner snapshots than on CEF.
-- **No JavaScript dialogs, downloads or file pickers.** `alert`, `confirm`
-  and `prompt` show nothing; a download is refused and logged, in both
-  profiles.
-- **Profiles.** The agent profile is in memory: its cookies and storage
-  last until the app quits. The person's profile is WebKit's default store
-  for the app's bundle id, so every Herdr home of that bundle shares it
-  (CEF keeps one per home).
-- **Popups from a cross-origin frame** open only from a clicked link:
-  WebKit reports no gesture flag.
-- **Console relay.** Console calls and uncaught errors reach agents through
-  a small script in the page's own world, which a page can see and post to.
 
 ### As your everyday Herdr
 
@@ -453,19 +397,11 @@ Smaller ones:
 - **No passkeys or security keys yet.** macOS lets an app run WebAuthn for
   any site only with an Apple-managed entitlement
   (`com.apple.developer.web-browser.public-key-credential`) that Herdr's
-  team would request. Without it, both engines refuse at once; measured on
+  team would request. Without it, WebAuthn refuses at once; measured on
   macOS 27.2 with dev builds, `http://127.0.0.1` pages, person and agent
   profiles (`scripts/browser-passkey-probe.html` writes them into its title;
   `?get` adds a timed `get`):
-  - **WebKit** reports `isUserVerifyingPlatformAuthenticatorAvailable()` and
-    `isConditionalMediationAvailable()` as `false`, and
-    `navigator.credentials.get` rejects in 0 ms (`NotAllowedError` on the
-    person's profile, `SecurityError` on the agent profile), with no sheet.
-    Its `getClientCapabilities()` still says `passkeyPlatformAuthenticator`
-    and `hybridTransport` are true, so a site that trusts that call alone
-    offers a passkey button that then fails. WebKit has no public API to turn
-    WebAuthn off.
-  - **CEF** starts with `--disable-blink-features=WebAuth`
+  - CEF starts with `--disable-blink-features=WebAuth`
     (`LIST_SWITCHES` in `src/browser/runtime.rs`): pages have no
     `PublicKeyCredential`, so sites offer passwords, and
     `navigator.credentials.get` rejects in under 25 ms. Without the switch
@@ -484,4 +420,4 @@ Smaller ones:
   native WebAuthn bridge, where Herdr's own code decides before any sheet
   shows. A script in the page can't do it: an agent's `eval` runs in that
   page and could undo it. Until the bridge exists, nothing can raise a
-  passkey sheet on either engine (above).
+  passkey sheet (above).

@@ -3,11 +3,7 @@
 # feature, CEF's framework and its five helper apps. CEF on macOS only starts
 # from such a bundle. Ad hoc signed, for this machine only.
 #
-#   scripts/browser-dev-bundle [--release] [--dev-agent-access] [--webkit]
-#
-# --webkit: the `browser-webkit` engine (the system's WKWebView) instead of
-# CEF, in target/browser-dev-webkit/Herdr Dev.app: just the app, no CEF, no
-# helpers, no CEF_PATH.
+#   scripts/browser-dev-bundle [--release] [--dev-agent-access]
 #
 # --dev-agent-access: automated tests only. A debug build with the
 # `dev-agent-access` feature: launched with HERDR_DEV_AGENT_ACCESS=1, its
@@ -28,27 +24,22 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 profile=debug
-engine=browser
 dev=
 for arg in "$@"; do
   case $arg in
     --release) profile=release ;;
     --dev-agent-access) dev=,dev-agent-access ;;
-    --webkit) engine=browser-webkit ;;
-    *) echo "usage: scripts/browser-dev-bundle [--release] [--dev-agent-access] [--webkit]" >&2; exit 2 ;;
+    *) echo "usage: scripts/browser-dev-bundle [--release] [--dev-agent-access]" >&2; exit 2 ;;
   esac
 done
-features=$engine$dev
+features=browser$dev
 id=dev.herdr.app.browser-dev
-if [[ $engine == browser-webkit ]]; then app="target/browser-dev-webkit/Herdr Dev.app"; else app="target/browser-dev/Herdr Dev.app"; fi
-app=${BROWSER_DEV_APP:-$app}
+app=${BROWSER_DEV_APP:-target/browser-dev/Herdr Dev.app}
 [[ $app == /* ]] || app="$PWD/$app"
 if pgrep -f -- "$app/Contents/" >/dev/null; then
   echo "browser-dev-bundle: a running app uses $app; quit it, or build elsewhere with BROWSER_DEV_APP=<path>.app" >&2
   exit 1
 fi
-# WKWebView.isInspectable (browser.devtools) needs 13.3.
-min_os=13.0
 plist() {
   cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -64,33 +55,13 @@ plist() {
     <key>CFBundleVersion</key><string>1</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>LSMinimumSystemVersion</key><string>$min_os</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict></plist>
 PLIST
 }
 warn_dev() {
   if [[ -n $dev ]]; then echo "WARNING: built with $features: its control socket can turn agent access on (HERDR_DEV_AGENT_ACCESS=1); for automated tests only" >&2; fi
 }
-
-if [[ $engine == browser-webkit ]]; then
-  # WebKit is part of macOS: the bundle is the app alone.
-  cargo_args=(--locked --features "$features" --bin herdr-app)
-  if [[ $profile == release ]]; then cargo_args+=(--release); fi
-  cargo build "${cargo_args[@]}"
-  id=dev.herdr.app.browser-dev-webkit
-  min_os=13.3
-  rm -rf "$app"
-  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  cp "target/$profile/herdr-app" "$app/Contents/MacOS/Herdr"
-  cp assets/icons/Herdr.icns "$app/Contents/Resources/Herdr.icns"
-  plist
-  codesign --force --sign - "$app"
-  codesign --verify --strict "$app"
-  echo "$app"
-  warn_dev
-  echo "size: $(du -sh "$app" | cut -f1) (WebKit engine: no browser engine in the bundle)"
-  exit 0
-fi
 
 cargo_args=(--locked --features "$features" --bin herdr-app --bin herdr-helper)
 if [[ $profile == release ]]; then cargo_args+=(--release); fi

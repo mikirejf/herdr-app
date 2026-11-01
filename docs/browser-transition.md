@@ -8,11 +8,11 @@ the official mod before relying on it.
 
 | What | Where | Removed by |
 |---|---|---|
-| The everyday app copy | `~/Applications/Herdr Browser.app` (WebKit copy: bundle id `dev.herdr.app.browser-daily`) | `uninstall` |
+| The everyday app copy | `~/Applications/Herdr Browser.app` | `uninstall` |
 | Browser panes in your layout | blocks `{ "mod": "browser-prototype", "props": { … } }` in each machine's layout document | you: close them; other Herdr builds show them as a mod that didn't load |
 | agent-browser's provider entry | the `herdr` plugin in `~/.agent-browser/config.json` | `uninstall` (other plugins and settings stay) |
-| Your own browsing data (cookies, sign-ins) | WebKit: `~/Library/{WebKit,HTTPStorages,Caches}/dev.herdr.app.browser-daily*`; CEF: `~/.config/herdr-app/browser` | `uninstall --data` |
-| The agent profile | in memory (WebKit) or `~/.config/herdr-app/browser/agent-profile` (CEF) | quitting (WebKit); `uninstall --data` (CEF) |
+| Your own browsing data (cookies, sign-ins) | `~/.config/herdr-app/browser` | `uninstall --data` |
+| The agent profile | `~/.config/herdr-app/browser/agent-profile` | `uninstall --data` |
 
 The prototype saves its panes as `browser-prototype`, not `browser`, so its
 blocks and an official browser mod's never read each other.

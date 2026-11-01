@@ -372,7 +372,7 @@ impl Core {
         let mut env = json!({"TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "herdr"});
         // This machine's terminals: agent-browser in them drives Herdr's browser
         // pane through `herdr-app __agent-browser-provider`.
-        #[cfg(all(target_os = "macos", feature = "browser-pane"))]
+        #[cfg(all(target_os = "macos", feature = "browser"))]
         if on.is_none() {
             for (k, v) in agent_browser_env() {
                 env[k] = Value::String(v);
@@ -545,7 +545,7 @@ mod tests {
 /// `AGENT_BROWSER_*` for a new local terminal: Herdr as agent-browser's
 /// provider, pinned to this app's socket, and a session of its own (the
 /// terminal's id is the core's to give, after it starts).
-#[cfg(all(target_os = "macos", feature = "browser-pane"))]
+#[cfg(all(target_os = "macos", feature = "browser"))]
 fn agent_browser_env() -> Vec<(String, String)> {
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let socket = crate::mods::app_dir().join("herdr-app.sock").to_string_lossy().into_owned();

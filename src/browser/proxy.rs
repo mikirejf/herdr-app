@@ -1,12 +1,11 @@
 //! The agents' loopback websocket: `ws://127.0.0.1:<port>/<token>`
 //! for one browser, passed through `agent::Link`'s allowlist to the engine
-//! (`engine::send_devtools`): CEF's in-process DevTools session (runtime.rs),
-//! or WebKit's translator (webkit.rs). No remote-debugging port exists; this
-//! is the only way in.
+//! (`engine::send_devtools`): CEF's in-process DevTools session (runtime.rs).
+//! No remote-debugging port exists; this is the only way in.
 //!
 //! Threads: one accepts, one serves each connection. Engines are called only
 //! on the main thread: messages for a page queue here and the engine drains
-//! them there (CEF's pump; WebKit's wake task). Tokens and ports are never logged.
+//! them there (CEF's pump). Tokens and ports are never logged.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Write as _};

@@ -394,7 +394,7 @@ pub struct AppWindow {
     control_focus: Option<FocusHandle>,
     /// keys.json's bindings as `(section, keys, action)`, from the last file
     /// that loaded: the key monitor's source while a page has the keyboard.
-    #[cfg(all(target_os = "macos", feature = "browser-pane"))]
+    #[cfg(all(target_os = "macos", feature = "browser"))]
     page_keys: Vec<(String, String, String)>,
     /// Terminal views by block id (panes and chrome terminal blocks).
     terms: HashMap<String, Term>,
@@ -498,7 +498,7 @@ impl AppWindow {
             browsers: crate::browser::Browsers::new(),
             layout_page: None,
             control_focus: None,
-            #[cfg(all(target_os = "macos", feature = "browser-pane"))]
+            #[cfg(all(target_os = "macos", feature = "browser"))]
             page_keys: Vec::new(),
             terms: HashMap::new(),
             copies: HashMap::new(),
@@ -898,7 +898,7 @@ impl AppWindow {
                 Ok(bindings) => {
                     crate::keys::install(bindings, cx);
                     let _ = std::fs::remove_file(file("keys.error"));
-                    #[cfg(all(target_os = "macos", feature = "browser-pane"))]
+                    #[cfg(all(target_os = "macos", feature = "browser"))]
                     {
                         self.page_keys = crate::keys::listing();
                     }
@@ -980,7 +980,7 @@ impl AppWindow {
     /// The keys Herdr keeps while a page has the keyboard (`browser::keys::page_bindings`),
     /// from the keys.json GPUI last loaded: a file with a problem keeps the old ones, as GPUI does.
     fn browser_keys(&mut self) {
-        #[cfg(all(target_os = "macos", feature = "browser-pane"))]
+        #[cfg(all(target_os = "macos", feature = "browser"))]
         self.browsers.set_bindings(crate::browser::keys::page_bindings(&self.page_keys, &self.layout_name));
     }
 
@@ -3425,11 +3425,6 @@ impl AppWindow {
                 if let Some(url) = r.as_ref().ok().and_then(|v| v.get("url")).and_then(Value::as_str) {
                     let url = url.to_owned();
                     self.save_browser_url(&b, &url);
-                }
-                // The engine's word for the person (WebKit: its inspector is Safari's).
-                if let Some(note) = r.as_ref().ok().and_then(|v| v.get("note")).and_then(Value::as_str) {
-                    let note = note.to_owned();
-                    self.layout_notice("Web Inspector", &note, window, cx);
                 }
                 return self.answer(r);
             }

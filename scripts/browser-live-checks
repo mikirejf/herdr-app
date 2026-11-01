@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Hands-on checks for a browser pane that tests can't do: they need a person
-# at the window. Run it in a terminal inside the dev app (`just browser-dev`,
-# with or without --webkit), so agent-browser reaches Herdr's browser.
+# at the window. Run it in a terminal inside the dev app (`just browser-dev`), so agent-browser reaches Herdr's browser.
 #
 #   bash scripts/browser-live-checks
 #

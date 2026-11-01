@@ -3,7 +3,7 @@
 //! Pure: runtime.rs applies them to CEF.
 
 // Default builds compile these rules only for their tests; the browser feature uses them.
-#![cfg_attr(not(all(target_os = "macos", feature = "browser-pane")), allow(dead_code))]
+#![cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
 
 use serde_json::{Value, json};
 

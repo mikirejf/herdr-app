@@ -587,7 +587,7 @@ The main ones:
   `browser.agent_browser_setup` (adds Herdr's provider to `~/.agent-browser/config.json`; a terminal
   older than this Herdr then runs `agent-browser -p herdr --session herdr-$HC_TERMINAL_ID …`),
   `browser.devtools {browser, open?}`, `browser.zoom {step?: "in"|"out"|"reset", level?: 25-500,
-  browser?}` (percent, Chromium's steps; kept per host on CEF, per pane on WebKit), `browser.viewport {preset?: "phone"|"tablet"|"fit",
+  browser?}` (percent, Chromium's steps; kept per host), `browser.viewport {preset?: "phone"|"tablet"|"fit",
   width?, height?, mobile?, browser?}` (responsive size; zoom and viewport default to the focused
   browser; an agent's own Emulation override replaces it, last one wins). `herdr-app ls` and `browsers()` list them
   (with `zoom` and `viewport`);

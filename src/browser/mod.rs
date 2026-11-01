@@ -1,75 +1,61 @@
 //! Browser panes: a web page in a block (`{ "mod": "browser-prototype", "props": { "browser": "b1", "url": … } }`),
 //! as a pane in a tab or a block in the shown layout.
 //!
-//! macOS builds with an engine feature show each page as a native child view
-//! over GPUI's Metal view, kept on its block's bounds every frame (native.rs,
-//! view.rs). The engine is one module behind `engine`:
-//! - `browser`: CEF in windowed mode (runtime.rs), Chromium shipped in the bundle.
-//! - `browser-webkit`: the system's WKWebView (webkit/), nothing shipped.
-//!
-//! Both turn on `browser-pane`, the engine-neutral rest: registry, key
-//! routing, overlay cover, consent, the agents' token proxy and allowlist.
+//! macOS builds with the `browser` feature show each page as a native child
+//! view over GPUI's Metal view, kept on its block's bounds every frame
+//! (native.rs, view.rs). The engine is CEF in windowed mode (runtime.rs, `engine`),
+//! Chromium shipped in the bundle; the rest is the registry, key routing,
+//! overlay cover, consent, the agents' token proxy and allowlist.
 //! Every other build has the same API with no browser behind it: blocks show
 //! a placeholder and the commands say what's missing (off.rs). The window
 //! only talks to `Browsers`.
 //!
-//! What the shared code calls on `engine` (both engines have each):
+//! What the shared code calls on `engine`:
 //! `set_events`, `start`, `open`, `close`, `navigate`, `history`, `reload`,
 //! `devtools`, `zoom`, `set_zoom`, `set_viewport`, `page_view`, `fit`,
 //! `set_focus`, `pressed`, `agent_event`, `clicked_herdr`, `covers_changed`, `wake`,
 //! `send_devtools` (an allowed CDP message from proxy.rs) and `agent_gone`.
 //! Page events and answers go back through `proxy::from_page`.
 
-#[cfg(all(target_os = "macos", feature = "browser", feature = "browser-webkit"))]
-compile_error!("pick one browser engine: the `browser` feature (CEF) or `browser-webkit` (WKWebView), not both");
-#[cfg(all(target_os = "macos", feature = "browser-pane", not(any(feature = "browser", feature = "browser-webkit"))))]
-compile_error!("browser-pane (or dev-agent-access) needs an engine: add the `browser` feature (CEF) or `browser-webkit` (WKWebView)");
-
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 pub mod agent;
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 pub mod emulate;
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 pub mod keys;
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 pub mod registry;
-#[cfg(any(test, all(target_os = "macos", feature = "browser-webkit")))]
-pub mod translate;
 
-#[cfg(all(target_os = "macos", feature = "browser-pane"))]
+#[cfg(all(target_os = "macos", feature = "browser"))]
 mod confirm;
-#[cfg(all(target_os = "macos", feature = "browser-pane"))]
+#[cfg(all(target_os = "macos", feature = "browser"))]
 mod native;
-#[cfg(all(target_os = "macos", feature = "browser-pane"))]
+#[cfg(all(target_os = "macos", feature = "browser"))]
 mod proxy;
 #[cfg(all(target_os = "macos", feature = "browser"))]
 mod runtime;
 #[cfg(all(target_os = "macos", feature = "browser"))]
 use runtime as engine;
-#[cfg(all(target_os = "macos", feature = "browser-webkit", not(feature = "browser")))]
-mod webkit;
-#[cfg(all(target_os = "macos", feature = "browser-webkit", not(feature = "browser")))]
-use webkit as engine;
-#[cfg(all(target_os = "macos", feature = "browser-pane"))]
+#[cfg(all(target_os = "macos", feature = "browser"))]
 mod view;
-#[cfg(all(target_os = "macos", feature = "browser-pane"))]
+#[cfg(all(target_os = "macos", feature = "browser"))]
 pub use native::{Browsers, Event};
 
-#[cfg(not(all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(not(all(target_os = "macos", feature = "browser")))]
 mod off;
-#[cfg(not(all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(not(all(target_os = "macos", feature = "browser")))]
 pub use off::{Browsers, Event};
 
 /// Shows `ask` as an app-modal macOS alert and waits for the person's
 /// answer (`confirm::ask`). Call it from a foreground task, never while
 /// the window or app is borrowed: AppKit runs a modal loop inside it.
-#[cfg(all(target_os = "macos", feature = "browser-pane"))]
+#[cfg(all(target_os = "macos", feature = "browser"))]
 pub fn confirm(ask: &Ask) -> Reply {
     confirm::ask(ask)
 }
 
 /// No browser here, so no dialog: nothing turns access on.
-#[cfg(not(all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(not(all(target_os = "macos", feature = "browser")))]
 pub fn confirm(_: &Ask) -> Reply {
     Reply { answer: Answer::Closed, after: std::time::Duration::ZERO, app_active: false }
 }
@@ -112,7 +98,7 @@ pub fn keyboard_page<'a>(dialog: bool, control: bool, layout_page: Option<&'a st
     layout_page.or(pane_page).filter(|p| !covered.iter().any(|c| c == p))
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 /// A rectangle in window points, top-left origin (as GPUI paints).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -122,7 +108,7 @@ pub struct Rect {
     pub h: f32,
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 impl Rect {
     /// Shares some area with `other`: edges that only touch, and an empty
     /// rectangle (an overlay not measured yet), don't count.
@@ -138,7 +124,7 @@ impl Rect {
     }
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 /// Which overlay each page hides under: GPUI can't draw over a page's native
 /// view, so a page an overlay overlaps hides while it's there and its block
 /// shows a placeholder. `covers` are the overlays painted this frame (label,
@@ -151,7 +137,7 @@ pub fn covered<'a>(pages: &[(&'a str, Rect)], covers: &'a [(String, Rect)]) -> V
         .collect()
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 /// What has AppKit's first responder in Herdr's window.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Responder {
@@ -164,7 +150,7 @@ pub enum Responder {
     Other,
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 impl std::fmt::Display for Responder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -175,7 +161,7 @@ impl std::fmt::Display for Responder {
     }
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 /// What to do so the page `wanted` (None: Herdr) has the keyboard, given
 /// who really has it.
 #[derive(Debug, PartialEq)]
@@ -185,7 +171,7 @@ pub enum Hand<'a> {
     TakeBack,
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 pub fn hand<'a>(wanted: Option<&'a str>, actual: &Responder) -> Hand<'a> {
     match (wanted, actual) {
         (Some(w), Responder::Page(a)) if a == w => Hand::Keep,
@@ -195,7 +181,7 @@ pub fn hand<'a>(wanted: Option<&'a str>, actual: &Responder) -> Hand<'a> {
     }
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 /// Whether a page may take focus when CEF asks (on creation, on a load, on
 /// a click): only the page the window gave the keyboard (`wanted`; None
 /// before the window first decided), or one the person just pressed.
@@ -208,7 +194,7 @@ pub fn may_focus(page: &str, wanted: Option<Option<&str>>, pressed: bool) -> boo
 // ---- agent access: what the window needs in every build (rules: agent.rs)
 
 /// Where a change to agent access came from (and the audit log's `by=`).
-#[cfg_attr(not(all(target_os = "macos", feature = "browser-pane")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     /// The person answered Allow in the native macOS dialog that the pane
@@ -227,7 +213,7 @@ pub enum Source {
     Quit,
 }
 
-#[cfg_attr(not(all(target_os = "macos", feature = "browser-pane")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
 impl Source {
     pub fn label(self) -> &'static str {
         match self {
@@ -249,7 +235,7 @@ impl Source {
 /// The audit log line for an agent access change. A browser id can be
 /// agent text (a layout block's `browser`), so it is escaped (`log_safe`):
 /// an id can't add a line of its own.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser-pane")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
 pub fn access_line(on: bool, browser: &str, by: Source) -> String {
     format!("browser: agent access {} browser={} by={}", if on { "on" } else { "off" }, log_safe(browser), by.label())
 }
@@ -264,7 +250,7 @@ pub fn access_button(shown_on: bool) -> (&'static str, bool) {
     if shown_on { ("Stop agent", false) } else { ("Allow agent…", true) }
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "browser-pane")))]
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 /// How long the native dialog's Allow stays disabled after it shows, and
 /// the least time between showing and an Allow that counts: a double click
 /// whose first click opened the dialog can't land its second on Allow.
@@ -274,7 +260,7 @@ pub const ALLOW_AFTER: std::time::Duration = std::time::Duration::from_millis(50
 
 /// A native "Let agents drive this browser?" dialog about to show
 /// (`Browsers::ask`), and what it names.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser-pane")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub struct Ask {
     pub browser: String,
@@ -285,7 +271,7 @@ pub struct Ask {
 }
 
 /// Which button closed the dialog.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser-pane")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Answer {
     /// "Allow" (no key equivalent).
@@ -297,7 +283,7 @@ pub enum Answer {
 }
 
 /// What came back from the dialog.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser-pane")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub struct Reply {
     pub answer: Answer,
@@ -328,7 +314,7 @@ pub fn dev_switch_note() -> Option<&'static str> {
 /// the dev bundle people run (`just browser-dev`) is built without it. Read
 /// once at startup and removed from the environment, so terminals never
 /// inherit it. Other builds compile none of this: the variable means nothing.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser-pane")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
 pub fn read_dev_switch() {
     #[cfg(all(debug_assertions, feature = "dev-agent-access"))]
     {
@@ -374,7 +360,7 @@ pub fn public_url(url: &str) -> String {
 /// userinfo come out of it, matched as they are and unescaped: the shape
 /// tests miss a Unicode host with a space in the path.
 /// Other titles pass.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser-pane")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
 pub fn public_title(title: &str, url: &str) -> String {
     without_url_secrets(&url_title_cut(title, url), url)
 }
@@ -469,7 +455,7 @@ fn unescape(text: &str) -> String {
 /// separators, bidi controls and invisible format characters escaped
 /// (`\n`, `\u{202e}`, `\u{200b}`), so it can't start a line of its own,
 /// reorder one, or hide text in one; at most 200 characters.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser-pane")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
 pub fn log_safe(text: &str) -> String {
     let mut out = String::new();
     for (i, ch) in text.chars().enumerate() {
@@ -523,7 +509,7 @@ pub fn unknown_core(terminal: &str) -> String {
 /// pane with `-p herdr`. It only declares the plugin: agent-browser outside
 /// Herdr keeps its own default provider.
 pub fn agent_browser_setup() -> Result<serde_json::Value, String> {
-    #[cfg(all(target_os = "macos", feature = "browser-pane"))]
+    #[cfg(all(target_os = "macos", feature = "browser"))]
     {
         let home = std::env::var_os("HOME").ok_or("HOME is unset")?;
         let path = std::path::Path::new(&home).join(".agent-browser").join("config.json");
@@ -543,7 +529,7 @@ pub fn agent_browser_setup() -> Result<serde_json::Value, String> {
         tracing::info!("browser: added Herdr's agent-browser plugin to {}", path.display());
         Ok(serde_json::json!({ "config": path.to_string_lossy(), "use": "agent-browser -p herdr --session herdr-$HC_TERMINAL_ID <command>" }))
     }
-    #[cfg(not(all(target_os = "macos", feature = "browser-pane")))]
+    #[cfg(not(all(target_os = "macos", feature = "browser")))]
     {
         Err("this Herdr build has no browser panes".into())
     }
@@ -576,7 +562,7 @@ pub fn remote(terminal: &str) -> String {
 }
 
 /// Whether browser panes work in this build.
-pub const AVAILABLE: bool = cfg!(all(target_os = "macos", feature = "browser-pane"));
+pub const AVAILABLE: bool = cfg!(all(target_os = "macos", feature = "browser"));
 
 #[cfg(test)]
 mod tests {

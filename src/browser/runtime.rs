@@ -169,9 +169,6 @@ pub fn reload(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// CEF's DevTools opens in a window of its own: nothing to tell the person.
-pub const DEVTOOLS_NOTE: Option<&str> = None;
-
 /// Opens or closes CEF's own DevTools window for a browser (None toggles).
 /// Returns whether it's open now. No debugging port: DevTools talks to the
 /// browser inside CEF.
@@ -263,7 +260,7 @@ pub fn fit(id: &str, size: objc2_foundation::NSSize, resized: bool) {
 /// that follows on its own (`on_got_focus`), so nothing to do here.
 pub fn pressed(_id: &str) {}
 
-/// Whether an event is an agent's key on its way out of the page (webkit.rs).
+/// Whether an event is an agent's key on its way out of the page.
 /// Never on CEF: Chromium marks DevTools key events skip-if-unhandled, so an
 /// unhandled one never comes back to the window.
 pub fn agent_event(_event: &objc2_app_kit::NSEvent) -> bool {
