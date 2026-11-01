@@ -95,7 +95,7 @@ enum Job {
     ToPage { browser: String, conn: u64, tab: String, id: i64, message: String },
     /// A tab change connection `conn` asked of the window.
     Tab { browser: String, conn: u64, op: TabOp },
-    /// An agent's connection ended: the pages it used reopen, so nothing it set stays.
+    /// An agent's connection ended: what it set on the pages it used is undone.
     Gone { browser: String, tabs: Vec<String> },
 }
 
@@ -123,7 +123,7 @@ static HUB: OnceLock<Mutex<Hub>> = OnceLock::new();
 
 impl Hub {
     /// Ends `browser`'s connection from this side: its socket shuts and
-    /// the page's reset is queued now, so neither waits for the agent to
+    /// the pages' reset is queued now, so neither waits for the agent to
     /// read. True when there was one. The caller wakes the pump.
     fn end_conn(&mut self, browser: &str) -> bool {
         let Some(c) = self.conns.remove(browser) else { return false };
@@ -259,11 +259,27 @@ pub fn tab_ready(tab: &str) {
     }
 }
 
-/// `tab`'s page is gone (closed, or closed to reopen): it takes no messages now.
+/// `tab`'s page is gone (closed): it takes no messages now.
 pub fn tab_gone(tab: &str) {
     let mut h = hub();
     h.ready.remove(tab);
     h.urls.remove(tab);
+}
+
+/// Chromium's DevTools agent for `tab` went away, with everything the agent
+/// set on it: its sessions on this tab end and it hears so. Its token, its
+/// connection and its other tabs stay. True when it had sessions there.
+pub fn tab_detached(tab: &str) -> bool {
+    let browser = registry::browser_of(tab);
+    let mut h = hub();
+    let Some(c) = h.conns.get_mut(browser) else { return false };
+    let texts = c.link.tab_detached(tab);
+    let had = !texts.is_empty();
+    if h.send(browser, texts) {
+        drop(h);
+        overflowed(browser);
+    }
+    had
 }
 
 /// The window made the tab change `ticket` asked for (`Ok(tab)`), or couldn't.
@@ -308,7 +324,7 @@ pub fn drain() {
                 if !engine::send_devtools(&tab, message.as_bytes()) {
                     let mut h = hub();
                     if let Some(c) = h.conns.get_mut(&browser).filter(|c| c.id == conn)
-                        && let Some(reply) = c.link.fail(id, "herdr: the page isn't there right now (opening or reopening): try again")
+                        && let Some(reply) = c.link.fail(id, "herdr: the page isn't there right now (still opening): try again")
                         && h.send(&browser, vec![reply])
                     {
                         drop(h);
@@ -322,7 +338,7 @@ pub fn drain() {
                 }
             }
             Job::Gone { browser, tabs } => {
-                tracing::debug!("browser: {browser}'s agent connection ended: {} page(s) to reopen", tabs.len(), browser = super::log_safe(&browser));
+                tracing::debug!("browser: {browser}'s agent connection ended: {} page(s) to reset", tabs.len(), browser = super::log_safe(&browser));
                 for t in &tabs {
                     engine::agent_gone(t);
                 }
@@ -408,7 +424,7 @@ fn refuse(mut stream: TcpStream, code: u16) {
 
 /// A connection's end, however its thread ends (a panic too): before the
 /// handshake finished only the connection goes; after it, the agent's own
-/// end also ends its token and resets the page, unless a revoke, replace or
+/// end also ends its token and resets its pages, unless a revoke, replace or
 /// full queue ended it first (they did both on their side).
 struct Ending {
     browser: String,
@@ -766,6 +782,24 @@ mod tests {
             seen = answer(&mut ws);
         }
         assert_eq!(seen, serde_json::json!({ "id": 6, "result": { "targetId": "t-closing:3" } }));
+    }
+
+    #[test]
+    fn one_tabs_agent_detaching_ends_its_sessions_and_keeps_the_token() {
+        let b = "t-detach";
+        tab_ready("t-detach:1");
+        tab_ready("t-detach:2");
+        let two = Pane { tabs: vec![tab(b, 1, true), tab(b, 2, true)], shown: "t-detach:1".into() };
+        let url = attach(b, two).unwrap();
+        let mut ws = connect(&url).unwrap();
+        let session = attach_tab(&mut ws, b);
+        assert!(tab_detached("t-detach:1"));
+        let detached = answer(&mut ws);
+        assert_eq!((detached["method"].as_str(), detached["params"]["sessionId"].as_str()), (Some("Target.detachedFromTarget"), Some(session.as_str())));
+        assert!(!tab_detached("t-detach:2"), "the other tab had no sessions");
+        assert!(connected(b), "the connection ended");
+        assert!(hub().tabs.contains_key(b), "the token ended");
+        assert_eq!(resets(b), 0);
     }
 
     #[test]

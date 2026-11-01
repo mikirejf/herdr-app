@@ -29,8 +29,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 const HEADER_HEIGHT: f32 = 30.0;
-/// The tab row a browser pane's header gets above its bar when the header is
-/// the `pane` mod and browser panes are built in (`mods/pane/browser.js` draws it).
+/// The tab row a browser pane's header gets above its bar when browser panes
+/// are built in (`mods/pane/browser.js` draws it).
 const BROWSER_TABS_HEIGHT: f32 = 28.0;
 
 /// A pane header's height: the layout's, and the browser tab row for a browser pane.
@@ -39,6 +39,21 @@ fn header_height(h: &crate::layout::Header, content: Option<&Content>) -> f32 {
         && matches!(content, Some(Content::Browser { .. }))
         && matches!(&h.content, HeaderContent::Mod { name, .. } if name == "pane");
     h.height.unwrap_or(HEADER_HEIGHT) + if tabs { BROWSER_TABS_HEIGHT } else { 0.0 }
+}
+
+/// The header a pane's frame draws: the frame's own, except that a browser
+/// pane always gets the `pane` mod's (its tab strip and address bar are
+/// there), whatever header the layout gives terminal panes, or none: shown
+/// always, on top, as tall as the layout's `pane` header or the default.
+/// `in_tab`: `n` is a pane of a tab (a browser block of the layout itself
+/// has no header unless the layout gives it one).
+fn pane_header(frame: Option<&PaneFrame>, n: &Node, in_tab: bool) -> Option<crate::layout::Header> {
+    let own = frame.and_then(|f| f.header.as_ref());
+    if !(crate::browser::AVAILABLE && in_tab && n.browser().is_some()) {
+        return own.cloned();
+    }
+    let height = own.filter(|h| matches!(&h.content, HeaderContent::Mod { name, .. } if name == "pane")).and_then(|h| h.height);
+    Some(crate::layout::Header { content: HeaderContent::Mod { name: "pane".into(), props: Value::Null }, reveal: None, height, position: None })
 }
 const HANDLE: f32 = 6.0;
 
@@ -1230,13 +1245,11 @@ impl AppWindow {
         if self.shows_tab()
             && let Some(c) = self.model.active_tab()
         {
-            let header = self.pane_frame().and_then(|f| f.header.as_ref()).and_then(|h| match &h.content {
-                HeaderContent::Mod { name, props } => Some((name.clone(), props.clone())),
-                HeaderContent::Builtin(_) => None,
-            });
+            let frame = self.pane_frame();
             for n in c.shown().visible_blocks() {
-                if let Some((name, props)) = &header
-                    && n.is_pane()
+                if n.is_pane()
+                    && let Some(h) = pane_header(frame, n, true)
+                    && let HeaderContent::Mod { name, props } = &h.content
                 {
                     mods.push(pane_header_mod(n, name, props));
                 }
@@ -1282,25 +1295,18 @@ impl AppWindow {
             }
         }
         // The layout's pane header, shown or not (`pane_frame` says what's drawn now).
-        let header = self
-            .chrome
-            .walk()
-            .into_iter()
-            .find_map(|n| match n.content() {
-                Some(Content::Context { pane: Some(f), .. }) => f.header.as_ref(),
-                _ => None,
-            })
-            .and_then(|h| match &h.content {
-                HeaderContent::Mod { name, props } => Some((name.clone(), props.clone())),
-                HeaderContent::Builtin(_) => None,
-            });
+        let frame = self.chrome.walk().into_iter().find_map(|n| match n.content() {
+            Some(Content::Context { pane: Some(f), .. }) => Some(f),
+            _ => None,
+        });
         for c in self.model.tabs() {
             for n in c.root.walk() {
                 if let Some(Content::Mod { name, props }) = n.content() {
                     out.insert(n.id.clone(), inst(name, props));
                 }
-                if let Some((name, props)) = &header
-                    && n.is_pane()
+                if n.is_pane()
+                    && let Some(h) = pane_header(frame, n, true)
+                    && let HeaderContent::Mod { name, props } = &h.content
                 {
                     let (slot, i) = pane_header_mod(n, name, props);
                     out.insert(slot, i);
@@ -4074,7 +4080,7 @@ impl AppWindow {
         }
         el = shadow(el, f.shadow.as_deref());
         let body = div().flex_1().min_h_0().flex().child(inner);
-        let Some(h) = &f.header else { return el.child(body).into_any_element() };
+        let Some(h) = &pane_header(Some(f), n, true) else { return el.child(body).into_any_element() };
         let head = div().flex_none().h(settings::z(header_height(h, n.content()))).w_full().flex()
             .child(self.render_slot(&format!("{}#frame", n.id), cx));
         if header_over(h.hover(), n.content()) {
@@ -4083,6 +4089,11 @@ impl AppWindow {
             return el.child(body).child(head).into_any_element();
         }
         if h.bottom() { el.child(body).child(head) } else { el.child(head).child(body) }.into_any_element()
+    }
+
+    /// A browser block that is a pane of a tab.
+    fn in_tab(&self, n: &Node) -> bool {
+        n.browser().is_some() && self.model.tab_of(&n.id).is_some()
     }
 
     /// `frame`: how panes are wrapped here (inside a framed tab), else None.
@@ -4098,6 +4109,9 @@ impl AppWindow {
         let el = match &n.kind {
             Kind::Block { content } => {
                 let inner = self.render_block(n, content, focused, cx);
+                // A browser pane has its header (tab strip, bar) even in a layout that frames no panes.
+                let bare = PaneFrame::default();
+                let frame = frame.or_else(|| pane_header(None, n, self.in_tab(n)).map(|_| &bare));
                 match frame.filter(|_| n.is_pane()) {
                     Some(f) => el.child(self.frame_pane(n, f, focused.contains(&n.id), inner, cx)),
                     None => el.child(inner),
@@ -4151,7 +4165,7 @@ impl AppWindow {
                 }
             }
         };
-        let row = frame.and_then(|f| f.header.as_ref()).filter(|h| !h.bottom() && !h.hover()).map(|h| header_height(h, n.content()));
+        let row = pane_header(frame, n, self.in_tab(n)).filter(|h| !h.bottom() && !h.hover()).map(|h| header_height(&h, n.content()));
         el.children(self.render_floats(n, cx)).children(self.pane_grip(&n.id, row, cx)).into_any_element()
     }
 
@@ -5026,6 +5040,38 @@ mod tests {
         let terminal = Content::Terminal { terminal: "t1".into() };
         assert!(super::header_over(true, Some(&terminal)));
         assert!(!super::header_over(false, Some(&terminal)));
+    }
+
+    #[cfg(all(target_os = "macos", feature = "browser"))]
+    #[test]
+    fn a_browser_pane_gets_the_pane_mods_header_in_every_layout() {
+        use crate::layout::{Content, Header, HeaderContent, Node, PaneFrame};
+        let browser = Node::block("p1", Content::browser("b1", "https://example.test/"));
+        let terminal = Node::block("p2", Content::Terminal { terminal: "t1".into() });
+        let mod_header = |name: &str, height: Option<f32>, reveal: Option<&str>| Header {
+            content: HeaderContent::Mod { name: name.into(), props: serde_json::Value::Null },
+            reveal: reveal.map(Into::into),
+            height,
+            position: Some("bottom".into()),
+        };
+        let framed = |h: Option<Header>| PaneFrame { header: h, ..Default::default() };
+        let pane_mod = |height| Header { content: mod_header("pane", None, None).content, reveal: None, height, position: None };
+        // No frame at all, a frame without a header, or another header mod.
+        assert_eq!(super::pane_header(None, &browser, true), Some(pane_mod(None)));
+        assert_eq!(super::pane_header(Some(&framed(None)), &browser, true), Some(pane_mod(None)));
+        let win98 = framed(Some(mod_header("win98", Some(25.7), Some("hover"))));
+        assert_eq!(super::pane_header(Some(&win98), &browser, true), Some(pane_mod(None)));
+        // The pane mod's own height is kept, and shown always, on top.
+        let pane = framed(Some(mod_header("pane", Some(34.0), Some("hover"))));
+        assert_eq!(super::pane_header(Some(&pane), &browser, true), Some(pane_mod(Some(34.0))));
+        // A terminal keeps the layout's header, or none.
+        assert_eq!(super::pane_header(Some(&win98), &terminal, true), win98.header);
+        assert_eq!(super::pane_header(None, &terminal, true), None);
+        // A browser block of the layout itself is the layout's to frame.
+        assert_eq!(super::pane_header(None, &browser, false), None);
+        // The tab row is reserved on top of the bar's height.
+        let h = super::pane_header(None, &browser, true).unwrap();
+        assert_eq!(super::header_height(&h, browser.content()), super::HEADER_HEIGHT + super::BROWSER_TABS_HEIGHT);
     }
 
     #[test]

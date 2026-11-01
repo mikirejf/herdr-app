@@ -817,7 +817,8 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   Terminals' `picker`, `peek`, and `pane` (an
   example pane header, not used by the default layouts; a browser pane gets
   a tab strip, back, forward, reload, an address field, zoom, a viewport picker and DevTools from its
-  `browser.js` (its header is one row taller, for the tabs)), and `worktree`
+  `browser.js` (its header is one row taller, for the tabs): every browser pane of a tab
+  shows this header, in every layout, whatever header the layout gives terminal panes), and `worktree`
   (git worktrees as spaces: the space menu's and the + menu's New worktree,
   Open worktree (the repo's checkouts, filtered; one already shown is gone
   to) and Remove worktree open it as a dialog with props `{space, folder?,

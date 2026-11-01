@@ -138,7 +138,8 @@ starts, so export it with a new `AGENT_BROWSER_SESSION` name. Open a browser wit
 `herdr-app do browser.open --url <url>` only when asked.
 The person's zoom and responsive size are `browser.zoom` and `browser.viewport`;
 your own `agent-browser set viewport` / `set device` work too, and the last one
-set wins.
+set wins. When your connection ends, Herdr undoes what you set on the pages
+(overrides, headers, enabled domains) and keeps the page as it is: no reload.
 
 ## Problems and safety
 

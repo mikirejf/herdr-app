@@ -220,7 +220,7 @@ fn refresh_zoom() {
 /// the one an agent's CDP goes through too, so the last one to set it wins.
 /// A viewport bigger than the pane is shrunk to fit it (`emulate::fit_scale`;
 /// `refit` keeps it fitting as the pane changes size). A reopen (an agent's
-/// session ending) starts a new session without it.
+/// session ending) puts it back on.
 pub fn set_viewport(id: &str, viewport: Option<Viewport>) -> Result<(), String> {
     let generation = STATE
         .with_borrow(|s| s.browsers.iter().find(|o| o.id == id && s.is_current(&o.id, o.generation)).map(|o| o.generation))
@@ -287,12 +287,7 @@ fn send_viewport(id: &str, viewport: Option<&Viewport>) -> Result<f64, String> {
     let host = need(id)?.host().ok_or("the browser has no host")?;
     let scale = viewport.map_or(1.0, |v| emulate::fit_scale(v, pane_size(id)));
     for (method, params) in emulate::calls(viewport, scale) {
-        let own = OWN_ID.get();
-        OWN_ID.set(own + 1);
-        let message = serde_json::json!({ "id": own, "method": method, "params": params }).to_string();
-        if host.send_dev_tools_message(Some(message.as_bytes())) != 1 {
-            return Err(format!("Chromium didn't take {method} for browser {id}"));
-        }
+        send_own(&host, id, method, params)?;
     }
     STATE.with_borrow_mut(|s| s.fits.insert(id.to_owned(), scale));
     Ok(scale)
@@ -338,18 +333,39 @@ pub fn tab_op(browser: &str, op: agent::TabOp) {
     send(Event::Agent { browser: browser.to_owned(), op });
 }
 
-/// An agent's connection to `id` ended: the page reopens at its url in a
-/// new CEF browser, whose DevTools session starts clean. Whatever the
-/// agent set (overrides, headers, auto-attach) goes with the old one.
+/// An agent's connection to `id` ended: what it set on the page's DevTools
+/// session (overrides, headers, enabled domains, auto-attach) is undone in
+/// place, and Herdr's own viewport goes back on. The page itself stays as the
+/// person has it (form input, history, a popup's opener). CEF keeps one
+/// DevTools client for the browser, so dropping the observer would not
+/// detach it: the undo is sent call by call.
 pub fn agent_gone(id: &str) {
-    let Some(url) = STATE.with_borrow(|s| s.pages.get(id).map(|p| p.url.clone())) else { return };
-    if phase() != Phase::Ready || browser(id).is_none() {
+    if phase() != Phase::Ready {
         return;
     }
-    let Some(parent) = view::existing(id) else { return };
-    tracing::info!("browser: {id}'s agent session ended; reopening it at {} so nothing the agent set stays", agent::loggable(&url), id = super::log_safe(id));
-    close(id);
-    open(id, parent, url);
+    let Ok(host) = need(id).and_then(|b| b.host().ok_or_else(|| "the browser has no host".to_owned())) else { return };
+    tracing::info!("browser: {}'s agent session ended; undoing what it set", super::log_safe(id));
+    for (method, params) in agent::reset_calls() {
+        if let Err(e) = send_own(&host, id, &method, params) {
+            tracing::warn!("browser: {e}");
+        }
+    }
+    let viewport = STATE.with_borrow(|s| s.pages.get(id).and_then(|p| p.viewport.clone()));
+    if let Err(e) = send_viewport(id, viewport.as_ref()) {
+        tracing::warn!("browser: {}'s viewport not put back: {e}", super::log_safe(id));
+    }
+}
+
+/// One DevTools call of Herdr's own to `host`'s page, under an id the agent
+/// proxy never uses.
+fn send_own(host: &BrowserHost, id: &str, method: &str, params: serde_json::Value) -> Result<(), String> {
+    let own = OWN_ID.get();
+    OWN_ID.set(own + 1);
+    let message = serde_json::json!({ "id": own, "method": method, "params": params }).to_string();
+    if host.send_dev_tools_message(Some(message.as_bytes())) != 1 {
+        return Err(format!("Chromium didn't take {method} for browser {id}", id = super::log_safe(id)));
+    }
+    Ok(())
 }
 
 fn phase() -> Phase {
@@ -1142,9 +1158,12 @@ wrap_dev_tools_message_observer! {
             1
         }
 
+        /// Chromium dropped this tab's agent and with it everything set on its
+        /// session: the agent's sessions on this tab end, its token and its
+        /// other tabs stay.
         fn on_dev_tools_agent_detached(&self, _browser: Option<&mut Browser>) {
-            if is_current(&self.id, self.generation) && proxy::revoke(super::registry::browser_of(&self.id)) {
-                tracing::info!("browser: agent token for {} revoked: CEF's DevTools agent went away", super::log_safe(&self.id));
+            if is_current(&self.id, self.generation) && proxy::tab_detached(&self.id) {
+                tracing::info!("browser: agent sessions on {} ended: CEF's DevTools agent went away", super::log_safe(&self.id));
             }
         }
     }

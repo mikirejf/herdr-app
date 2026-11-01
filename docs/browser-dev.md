@@ -95,6 +95,11 @@ right-click and typing (the keyboard must stay where you left it). It writes you
   layout. The name isn't `browser`, which Herdr's own browser mod will
   likely use: neither reads the other's blocks. In a floating block it
   never opens: a native view can't float over GPUI's drawing.
+- Every browser pane of a tab shows the `pane` mod's header: a tab strip over
+  the address bar, in every layout, whatever header the layout gives terminal
+  panes (another mod, `reveal: "hover"`, none) or whether it frames panes at all.
+  Its height is the layout's `pane` header height (default 30) plus 28 for the
+  tabs. A browser block placed in a layout itself gets no header.
 - Each frame the page's view takes its block's bounds; a block that isn't
   painted (another tab, a zoomed pane, a hidden column) hides its page.
 - GPUI can't draw over a page, so a page hides while any overlay overlaps
@@ -156,8 +161,8 @@ right-click and typing (the keyboard must stay where you left it). It writes you
   under an agent's size until the person picks fit. And when the pane
   changes size while the person's viewport is shrunk to fit, Herdr sends the
   person's viewport again, over any agent override, without telling the
-  agent. When an agent's connection ends the page reopens without any
-  override. A page
+  agent. When an agent's connection ends, Herdr undoes its overrides on
+  the page and puts the person's viewport back (see "Agents drive a page"). A page
   without a `<meta name="viewport">` lays out 980 px wide as a mobile page,
   as it would on a phone.
 - Herdr never gives out a browser id (`b1`, `b2`, ...) twice while the app
@@ -272,9 +277,18 @@ stopped reading can't hold it open. A connection's own end (the agent
 closed it, a write it didn't take in 5 s, or more than 1024 messages or
 32 MiB waiting for it) ends its token too; agent-browser asks the provider
 for a new one. Whenever a connection ends, the pages it sent
-messages to reopen at their urls so nothing the agent set (headers,
-overrides) stays. The reopen keeps the
-profile's storage (cookies, local storage).
+messages get the undo of everything an allowed method can set (emulation,
+extra headers, cache and network conditions, enabled domains, auto-attach,
+screencast, lifecycle events; `reset_calls` in `src/browser/agent.rs`, kept
+in step with the allowlist by a test), then Herdr's own viewport goes back on.
+The page itself is not reloaded: form input, history, scroll, and a popup's
+opener stay as the person has them. CEF keeps one DevTools client per browser
+and dropping its observer does not detach it (`CefDevToolsController`
+detaches only when the browser is destroyed), so the undo is sent call by call.
+What a page's own script did at the agent's bidding (typed text, DOM changes,
+a created isolated world) stays. When Chromium itself drops a tab's DevTools
+agent, only that tab's agent sessions end (`Target.detachedFromTarget`); the
+token, the connection and the other tabs stay.
 Every attach is a line in the app's log, never the token or port. The log
 is the app's stderr: `just browser-dev` keeps it in `/tmp/hbd.dev/app.log`, a
 file any process running as you can edit, and an app opened from Finder
@@ -341,10 +355,6 @@ whether Chromium then skips checks between its processes is unverified.
 
 Known ones:
 
-- **Takeover's first call fails.** When a second agent attaches to the same
-  page, the first agent's connection ends and the page reopens; the new
-  agent's first request gets `herdr: the page isn't there right now (opening
-  or reopening): try again`. A retry half a second later works.
 - **CEF logs "Timeout of new browser info response"** about 2 s after a
   page fails to load (seen in two test runs' logs). Its effect was not
   investigated.

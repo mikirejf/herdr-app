@@ -302,6 +302,29 @@ pub fn check_upgrade(req: &Upgrade, port: u16, tokens: &Tokens, live: impl Fn(&s
 
 // ---- the method allowlist ---------------------------------------------------------
 
+/// Domains an agent may call whole (`Runtime` and `DOM` have two refused
+/// methods each, see `allowed_method`).
+const OPEN_DOMAINS: &[&str] = &[
+    "Accessibility", "DOMSnapshot", "CSS", "Overlay", "Log", "Inspector", "Performance", "PerformanceTimeline", "Animation", "LayerTree", "Schema",
+    "WebMCP",
+];
+const PAGE_METHODS: &[&str] = &[
+    "enable", "disable", "getFrameTree", "getLayoutMetrics", "getNavigationHistory", "navigateToHistoryEntry", "navigate", "reload", "stopLoading",
+    "captureScreenshot", "printToPDF", "startScreencast", "stopScreencast", "screencastFrameAck", "handleJavaScriptDialog", "createIsolatedWorld",
+    "setLifecycleEventsEnabled", "bringToFront", "setDocumentContent",
+];
+const INPUT_METHODS: &[&str] = &["dispatchMouseEvent", "dispatchKeyEvent", "insertText", "dispatchTouchEvent", "imeSetComposition"];
+const EMULATION_METHODS: &[&str] = &[
+    "setDeviceMetricsOverride", "clearDeviceMetricsOverride", "setEmulatedMedia", "setUserAgentOverride", "setLocaleOverride", "setTimezoneOverride",
+    "setGeolocationOverride", "clearGeolocationOverride", "setFocusEmulationEnabled", "setTouchEmulationEnabled",
+];
+const NETWORK_METHODS: &[&str] = &["enable", "disable", "getResponseBody", "getRequestPostData", "setExtraHTTPHeaders", "emulateNetworkConditions", "setCacheDisabled", "setUserAgentOverride"];
+/// The ones Herdr answers from the pane's tabs (never sent to CEF) and the frame ones CEF answers.
+const TARGET_METHODS: &[&str] = &[
+    "setAutoAttach", "detachFromTarget", "getTargetInfo", "setDiscoverTargets", "getTargets", "createTarget", "attachToTarget", "closeTarget",
+    "activateTarget",
+];
+
 /// CDP methods an agent may send (review § 2). CEF's in-process session is
 /// a trusted one (local files, any target, the whole profile's storage), so
 /// this is an allowlist: anything not named here is refused and never
@@ -315,39 +338,79 @@ pub fn allowed_method(method: &str) -> bool {
         return false;
     }
     match domain {
-        "Accessibility" | "DOMSnapshot" | "CSS" | "Overlay" | "Log" | "Inspector" | "Performance" | "PerformanceTimeline" | "Animation"
-        | "LayerTree" | "Schema" | "WebMCP" => true,
         // evaluate/callFunctionOn are inherent: the agent runs script as the page.
         "Runtime" => name != "addBinding",
         "DOM" => !matches!(name, "setFileInputFiles" | "getFileInfo"),
-        "Page" => matches!(
-            name,
-            "enable" | "disable" | "getFrameTree" | "getLayoutMetrics" | "getNavigationHistory" | "navigateToHistoryEntry" | "navigate"
-                | "reload" | "stopLoading" | "captureScreenshot" | "printToPDF" | "startScreencast" | "stopScreencast"
-                | "screencastFrameAck" | "handleJavaScriptDialog" | "createIsolatedWorld" | "setLifecycleEventsEnabled"
-                | "bringToFront" | "setDocumentContent"
-        ),
-        "Input" => matches!(name, "dispatchMouseEvent" | "dispatchKeyEvent" | "insertText" | "dispatchTouchEvent" | "imeSetComposition"),
-        "Emulation" => matches!(
-            name,
-            "setDeviceMetricsOverride" | "clearDeviceMetricsOverride" | "setEmulatedMedia" | "setUserAgentOverride" | "setLocaleOverride"
-                | "setTimezoneOverride" | "setGeolocationOverride" | "clearGeolocationOverride" | "setFocusEmulationEnabled"
-                | "setTouchEmulationEnabled"
-        ),
-        "Network" => matches!(
-            name,
-            "enable" | "disable" | "getResponseBody" | "getRequestPostData" | "setExtraHTTPHeaders" | "emulateNetworkConditions"
-                | "setCacheDisabled" | "setUserAgentOverride"
-        ),
-        // The ones Herdr answers from the pane's tabs (never sent to CEF) and the frame ones CEF answers.
-        "Target" => matches!(
-            name,
-            "setAutoAttach" | "detachFromTarget" | "getTargetInfo" | "setDiscoverTargets" | "getTargets" | "createTarget" | "attachToTarget"
-                | "closeTarget" | "activateTarget"
-        ),
+        _ if OPEN_DOMAINS.contains(&domain) => true,
+        "Page" => PAGE_METHODS.contains(&name),
+        "Input" => INPUT_METHODS.contains(&name),
+        "Emulation" => EMULATION_METHODS.contains(&name),
+        "Network" => NETWORK_METHODS.contains(&name),
+        "Target" => TARGET_METHODS.contains(&name),
         "Browser" => name == "getVersion",
         _ => false,
     }
+}
+
+/// What an agent can leave set on a tab's DevTools session, which is the
+/// page's own for as long as the page lives: CEF keeps one DevTools client
+/// per browser, and dropping an observer does not detach it (CEF's
+/// `CefDevToolsController` detaches only when the browser is destroyed). So
+/// when the agent's connection ends, each tab it touched gets the undo of
+/// every state-setting method above (setter, undo method, undo params).
+/// A method of a list above that sets nothing is in `STATELESS`.
+const UNDO: &[(&str, &str, &str)] = &[
+    ("Emulation.setDeviceMetricsOverride", "Emulation.clearDeviceMetricsOverride", "{}"),
+    ("Emulation.setEmulatedMedia", "Emulation.setEmulatedMedia", r#"{"media":"","features":[]}"#),
+    ("Emulation.setUserAgentOverride", "Emulation.setUserAgentOverride", r#"{"userAgent":""}"#),
+    ("Emulation.setLocaleOverride", "Emulation.setLocaleOverride", "{}"),
+    ("Emulation.setTimezoneOverride", "Emulation.setTimezoneOverride", r#"{"timezoneId":""}"#),
+    ("Emulation.setGeolocationOverride", "Emulation.clearGeolocationOverride", "{}"),
+    ("Emulation.setFocusEmulationEnabled", "Emulation.setFocusEmulationEnabled", r#"{"enabled":false}"#),
+    ("Emulation.setTouchEmulationEnabled", "Emulation.setTouchEmulationEnabled", r#"{"enabled":false}"#),
+    ("Network.enable", "Network.disable", "{}"),
+    ("Network.setExtraHTTPHeaders", "Network.setExtraHTTPHeaders", r#"{"headers":{}}"#),
+    ("Network.emulateNetworkConditions", "Network.emulateNetworkConditions", r#"{"offline":false,"latency":0,"downloadThroughput":-1,"uploadThroughput":-1}"#),
+    ("Network.setCacheDisabled", "Network.setCacheDisabled", r#"{"cacheDisabled":false}"#),
+    ("Network.setUserAgentOverride", "Network.setUserAgentOverride", r#"{"userAgent":""}"#),
+    ("Page.enable", "Page.disable", "{}"),
+    ("Page.setLifecycleEventsEnabled", "Page.setLifecycleEventsEnabled", r#"{"enabled":false}"#),
+    ("Page.startScreencast", "Page.stopScreencast", "{}"),
+    // Auto-attached children go with it, which resumes any that wait for a debugger.
+    ("Target.setAutoAttach", "Target.setAutoAttach", r#"{"autoAttach":false,"waitForDebuggerOnStart":false,"flatten":true}"#),
+    ("Animation.setPlaybackRate", "Animation.setPlaybackRate", r#"{"playbackRate":1}"#),
+];
+
+/// Allowed methods of the lists above that leave nothing set on the session
+/// (the test that every other one has an undo reads this).
+#[cfg(test)]
+const STATELESS: &[&str] = &[
+    "Emulation.clearDeviceMetricsOverride", "Emulation.clearGeolocationOverride", "Network.disable", "Network.getResponseBody",
+    "Network.getRequestPostData", "Page.disable", "Page.getFrameTree", "Page.getLayoutMetrics", "Page.getNavigationHistory",
+    "Page.navigateToHistoryEntry", "Page.navigate", "Page.reload", "Page.stopLoading", "Page.captureScreenshot", "Page.printToPDF",
+    "Page.stopScreencast", "Page.screencastFrameAck", "Page.handleJavaScriptDialog", "Page.createIsolatedWorld", "Page.bringToFront",
+    "Page.setDocumentContent", "Target.detachFromTarget", "Target.getTargetInfo", "Target.setDiscoverTargets", "Target.getTargets",
+    "Target.createTarget", "Target.attachToTarget", "Target.closeTarget", "Target.activateTarget",
+];
+
+/// Whole domains an agent can `enable`: their `disable` undoes what it set in them.
+const DISABLED: &[&str] = &[
+    "Runtime", "DOM", "CSS", "Overlay", "Log", "Inspector", "Performance", "PerformanceTimeline", "Animation", "LayerTree", "Accessibility", "WebMCP", "DOMSnapshot",
+];
+
+/// The DevTools calls (method, params) that take everything an agent set
+/// off a tab's page: run on each tab it touched when its connection ends.
+pub fn reset_calls() -> Vec<(String, Value)> {
+    let mut calls: Vec<(String, Value)> = Vec::new();
+    // A child waiting for a debugger resumes with the auto-attach below.
+    calls.push(("Runtime.runIfWaitingForDebugger".into(), json!({})));
+    for (_, undo, params) in UNDO.iter().copied() {
+        if !calls.iter().any(|(m, _)| m == undo) {
+            calls.push((undo.to_owned(), serde_json::from_str(params).unwrap_or_default()));
+        }
+    }
+    calls.extend(DISABLED.iter().map(|d| (format!("{d}.disable"), json!({}))));
+    calls
 }
 
 /// While the page itself is outside the URL gate (a person or a popup put
@@ -462,7 +525,7 @@ pub struct Link {
     /// The proxy's request id → the request.
     pending: HashMap<i64, Pending>,
     waiting: Vec<Waiting>,
-    /// Tabs this connection sent a message to: they reopen when it ends.
+    /// Tabs this connection sent a message to: they get `reset_calls` when it ends.
     touched: BTreeSet<String>,
     ticket: u64,
 }
@@ -717,6 +780,13 @@ impl Link {
         }
         out.push(event("Target.detachedFromTarget", json!({ "sessionId": session, "targetId": tab }), None));
         out
+    }
+
+    /// The tab's DevTools agent went away (Chromium dropped every override
+    /// and enabled domain with it): only this tab's sessions end.
+    pub fn tab_detached(&mut self, tab: &str) -> Vec<String> {
+        self.touched.remove(tab);
+        self.gone(tab)
     }
 
     /// The tab closed: its sessions end, and what was asked of it fails.
@@ -1999,5 +2069,51 @@ mod tests {
     fn terminals_ask_agent_browser_to_exit_after_five_idle_minutes() {
         let env = plugin_env("/Apps/Herdr", "/s", None, "s");
         assert_eq!(env.iter().find(|(k, _)| k == "AGENT_BROWSER_IDLE_TIMEOUT_MS").map(|(_, v)| v.as_str()), Some("300000"));
+    }
+
+    #[test]
+    fn everything_an_agent_can_set_on_a_tab_has_an_undo() {
+        let named = |domain: &str, names: &[&str]| names.iter().map(|n| format!("{domain}.{n}")).collect::<Vec<_>>();
+        let mut listed = Vec::new();
+        for (domain, names) in [("Emulation", EMULATION_METHODS), ("Network", NETWORK_METHODS), ("Page", PAGE_METHODS), ("Target", TARGET_METHODS)] {
+            listed.extend(named(domain, names));
+        }
+        for method in &listed {
+            assert!(allowed_method(method), "{method}");
+            let undone = UNDO.iter().any(|(setter, ..)| setter == method);
+            let stateless = STATELESS.contains(&method.as_str());
+            assert!(undone != stateless, "{method} must be in exactly one of UNDO and STATELESS (undone {undone}, stateless {stateless})");
+        }
+        for (setter, undo, params) in UNDO {
+            assert!(allowed_method(setter) && allowed_method(undo), "{setter} / {undo}");
+            assert!(serde_json::from_str::<Value>(params).is_ok_and(|p| p.is_object()), "{params}");
+        }
+        assert!(STATELESS.iter().all(|m| allowed_method(m)));
+        // A whole domain the agent enables: its disable undoes the rest.
+        for domain in OPEN_DOMAINS.iter().chain(&["Runtime", "DOM"]).filter(|d| **d != "Schema") {
+            assert!(DISABLED.contains(domain), "{domain}.disable");
+        }
+        let calls = reset_calls();
+        assert!(calls.iter().all(|(m, _)| allowed_method(m)));
+        let methods: Vec<&str> = calls.iter().map(|(m, _)| m.as_str()).collect();
+        for expect in ["Emulation.clearDeviceMetricsOverride", "Target.setAutoAttach", "Network.setExtraHTTPHeaders", "Runtime.runIfWaitingForDebugger", "CSS.disable"] {
+            assert!(methods.contains(&expect), "{expect}");
+        }
+        assert_eq!(methods.iter().filter(|m| **m == "Target.setAutoAttach").count(), 1);
+    }
+
+    #[test]
+    fn a_tabs_agent_detaching_ends_only_that_tabs_sessions() {
+        let mut link = link();
+        let one = attach(&mut link, "b1:1");
+        let two = attach(&mut link, "b1:2");
+        let out: Vec<Value> = link.tab_detached("b1:1").iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0]["method"].as_str(), out[0]["params"]["sessionId"].as_str()), (Some("Target.detachedFromTarget"), Some(one.as_str())));
+        assert_eq!(link.touched(), vec!["b1:2".to_owned()]);
+        // The other tab's session still works.
+        let mut next = 0;
+        let r = send(&mut link, &mut next, json!({ "id": 3, "method": "Runtime.evaluate", "params": {}, "sessionId": two }));
+        assert!(matches!(r, FromAgent::Forward { ref tab, .. } if tab == "b1:2"));
     }
 }
