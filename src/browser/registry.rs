@@ -9,7 +9,8 @@
 //!
 //! A browser has an ordered list of tabs and one active. Each tab is its own
 //! engine page with an id unique in the app run (`b1:3`, see [`tab_id`]),
-//! created lazily: only the active tab opens, the others when first selected.
+//! created lazily: only the active tab opens, the others when first selected
+//! or when an agent attaches them (`want_open`).
 //! A tab with no url and no page is empty (the "new tab" state).
 
 // Default builds compile these rules only for their tests; the browser feature uses them.
@@ -158,6 +159,9 @@ pub struct Registry {
     highest: u64,
     /// Opened tabs closed since the last `reconcile`.
     closing: Vec<String>,
+    /// Tabs an agent attached before their page existed: `reconcile` opens
+    /// them even though they aren't the shown one.
+    wanted: Vec<String>,
 }
 
 /// The page a browser with no saved url opens on.
@@ -217,6 +221,17 @@ impl Registry {
             }
             keep
         });
+        for tab in std::mem::take(&mut self.wanted) {
+            let t = self.entries.iter_mut().flat_map(|e| e.tabs.iter_mut()).find(|t| t.id == tab && !t.opened);
+            if let Some(t) = t {
+                t.opened = true;
+                t.page.loading = true;
+                if t.page.url.trim().is_empty() {
+                    t.page.url = BLANK.to_owned();
+                }
+                changes.open.push((t.id.clone(), t.page.url.clone()));
+            }
+        }
         for e in &mut self.entries {
             let tab = &mut e.tabs[e.active];
             if !tab.opened && !tab.page.url.trim().is_empty() {
@@ -302,6 +317,25 @@ impl Registry {
             return Err(format!("browser {browser} has {} tab(s): index {index} is out of range (0 = first)", e.tabs.len()));
         }
         e.active = index;
+        Ok(())
+    }
+
+    /// Shows `tab`, a tab of `browser`.
+    pub fn select_by_id(&mut self, browser: &str, tab: &str) -> Result<(), String> {
+        let e = self.get_mut(browser)?;
+        e.active = e.index_of(tab).ok_or_else(|| format!("{tab} is not a tab of {browser}"))?;
+        Ok(())
+    }
+
+    /// Asks for `tab`'s page to open even if it isn't the shown tab (an empty
+    /// one opens at about:blank); `reconcile` opens it.
+    pub fn want_open(&mut self, browser: &str, tab: &str) -> Result<(), String> {
+        if self.get(browser).and_then(|e| e.index_of(tab)).is_none() {
+            return Err(format!("{tab} is not a tab of {browser}"));
+        }
+        if !self.wanted.iter().any(|t| t == tab) {
+            self.wanted.push(tab.to_owned());
+        }
         Ok(())
     }
 
@@ -560,6 +594,33 @@ mod tests {
         r.select_tab("b1", 1).unwrap();
         r.select_tab("b1", 2).unwrap();
         assert_eq!(r.reconcile(&[b]), Changes::default());
+    }
+
+    #[test]
+    fn an_agent_opens_a_hidden_tab_without_showing_it() {
+        let mut r = Registry::default();
+        let b = blocks_of("b1", &["https://a/", "https://b/", ""], 0, "p1", Some("sp1"));
+        r.reconcile(&[b.clone()]);
+        let (second, third) = (r.get("b1").unwrap().tabs[1].id.clone(), r.get("b1").unwrap().tabs[2].id.clone());
+        r.want_open("b1", &second).unwrap();
+        r.want_open("b1", &second).unwrap();
+        r.want_open("b1", &third).unwrap();
+        let changes = r.reconcile(&[b.clone()]);
+        // The shown tab stays; an empty tab opens at about:blank.
+        assert_eq!(changes.open, vec![(second.clone(), "https://b/".to_owned()), (third.clone(), BLANK.to_owned())]);
+        assert_eq!(r.get("b1").unwrap().active, 0);
+        assert!(r.get("b1").unwrap().tabs.iter().all(|t| t.opened));
+        assert_eq!(r.reconcile(&[b]), Changes::default(), "asked once, opened once");
+        assert!(r.want_open("b1", "b2:9").is_err() && r.want_open("nope", &second).is_err());
+    }
+
+    #[test]
+    fn an_agent_selects_a_tab_by_id() {
+        let mut r = browser_with(&["https://a/", "https://b/"]);
+        let second = r.get("b1").unwrap().tabs[1].id.clone();
+        r.select_by_id("b1", &second).unwrap();
+        assert_eq!(r.get("b1").unwrap().active, 1);
+        assert!(r.select_by_id("b1", "b1:999").is_err() && r.select_by_id("b9", &second).is_err());
     }
 
     #[test]

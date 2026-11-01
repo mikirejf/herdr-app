@@ -1,11 +1,14 @@
-//! The agents' loopback websocket: `ws://127.0.0.1:<port>/<token>`
-//! for one browser, passed through `agent::Link`'s allowlist to the engine
-//! (`engine::send_devtools`): CEF's in-process DevTools session (runtime.rs).
-//! No remote-debugging port exists; this is the only way in.
+//! The agents' loopback websocket: `ws://127.0.0.1:<port>/<token>` for one
+//! browser pane. `agent::Link` answers the Target domain from the pane's tabs
+//! (kept here, `set_tabs`) and passes every other allowed message to one tab's
+//! page through the engine (`engine::send_devtools`): CEF's in-process
+//! DevTools session (runtime.rs). No remote-debugging port exists; this is
+//! the only way in.
 //!
 //! Threads: one accepts, one serves each connection. Engines are called only
 //! on the main thread: messages for a page queue here and the engine drains
-//! them there (CEF's pump). Tokens and ports are never logged.
+//! them there (CEF's pump), tab changes too (they go on to the window).
+//! Tokens and ports are never logged.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Write as _};
@@ -18,8 +21,8 @@ use serde_json::Value;
 use tungstenite::Message;
 use tungstenite::protocol::WebSocketConfig;
 
-use super::agent::{self, FromAgent, Link, Tokens};
-use super::engine;
+use super::agent::{self, FromAgent, Link, Pane, TabInfo, TabOp, Tokens};
+use super::{engine, registry};
 
 /// Messages from a page waiting for an agent that isn't reading: past
 /// either limit its connection ends, so an agent can't grow the app's memory.
@@ -88,10 +91,12 @@ impl Conn {
 }
 
 enum Job {
-    /// An allowed message for the page, under the proxy's id, from connection `conn`.
-    ToPage { browser: String, conn: u64, id: i64, message: String },
-    /// An agent's connection ended: the page reopens, so nothing it set stays.
-    Gone { browser: String },
+    /// An allowed message for `tab`'s page, under the proxy's id, from connection `conn`.
+    ToPage { browser: String, conn: u64, tab: String, id: i64, message: String },
+    /// A tab change connection `conn` asked of the window.
+    Tab { browser: String, conn: u64, op: TabOp },
+    /// An agent's connection ended: the pages it used reopen, so nothing it set stays.
+    Gone { browser: String, tabs: Vec<String> },
 }
 
 #[derive(Default)]
@@ -103,8 +108,12 @@ struct Hub {
     next_conn: u64,
     /// Request ids sent to pages: one space for every browser.
     next_id: i64,
-    /// Each browser's committed main-frame url (the proxy's URL gate).
+    /// Each tab's committed main-frame url (the proxy's URL gate).
     urls: HashMap<String, String>,
+    /// The tabs of each browser with a token, as the window last said.
+    tabs: HashMap<String, Pane>,
+    /// Tabs whose page takes DevTools messages.
+    ready: HashSet<String>,
     jobs: VecDeque<Job>,
     /// Connections whose thread still runs.
     serving: HashSet<u64>,
@@ -119,14 +128,34 @@ impl Hub {
     fn end_conn(&mut self, browser: &str) -> bool {
         let Some(c) = self.conns.remove(browser) else { return false };
         let _ = c.socket.shutdown(Shutdown::Both);
-        self.jobs.push_back(Job::Gone { browser: browser.to_owned() });
+        self.jobs.push_back(Job::Gone { browser: browser.to_owned(), tabs: c.link.touched() });
         true
+    }
+
+    /// Queues `texts` for `browser`'s agent. True: its queue is past the
+    /// limit, so its connection and token ended (the caller wakes the pump).
+    fn send(&mut self, browser: &str, texts: Vec<String>) -> bool {
+        let Some(c) = self.conns.get(browser) else { return false };
+        if texts.into_iter().all(|t| c.push(t)) {
+            return false;
+        }
+        self.end_agent(browser);
+        true
+    }
+
+    /// The agent hears what changed in `browser`'s tabs since it last looked.
+    fn publish(&mut self, browser: &str) -> bool {
+        let Some(pane) = self.tabs.get(browser).cloned() else { return false };
+        let Some(c) = self.conns.get_mut(browser) else { return false };
+        let texts = c.link.sync(pane);
+        self.send(browser, texts)
     }
 
     /// The agent's token and connection end (the connection's end ends the
     /// token too: agent-browser asks the provider for a new one).
     fn end_agent(&mut self, browser: &str) -> bool {
         let token = self.tokens.revoke(browser);
+        self.tabs.remove(browser);
         self.end_conn(browser) || token
     }
 
@@ -144,9 +173,10 @@ fn hub() -> MutexGuard<'static, Hub> {
     HUB.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A new token url for `browser`. An earlier token for it dies and its connection closes (the new agent
-/// takes over; the old one sees its socket close).
-pub fn attach(browser: &str) -> Result<String, String> {
+/// A new token url for `browser`, whose tabs are `pane`. An earlier token for
+/// it dies and its connection closes (the new agent takes over; the old one
+/// sees its socket close).
+pub fn attach(browser: &str, mut pane: Pane) -> Result<String, String> {
     let port = listen()?;
     let mut random = [0u8; 32];
     // SAFETY: arc4random_buf fills exactly `len` bytes of a valid buffer
@@ -154,7 +184,12 @@ pub fn attach(browser: &str) -> Result<String, String> {
     unsafe { libc::arc4random_buf(random.as_mut_ptr().cast(), random.len()) };
     let mut h = hub();
     let token = h.tokens.issue(browser, random);
-    if h.end_conn(browser) {
+    let replaced = h.end_conn(browser);
+    for t in &mut pane.tabs {
+        t.ready = h.ready.contains(&t.id);
+    }
+    h.tabs.insert(browser.to_owned(), pane);
+    if replaced {
         drop(h);
         engine::wake();
         tracing::info!("browser: agent session for {browser} replaced by a new attach", browser = super::log_safe(browser));
@@ -176,22 +211,87 @@ pub fn revoke_all() {
     engine::wake();
 }
 
-/// The page's committed main-frame url changed (runtime.rs, `on_address_change`).
-pub fn set_url(browser: &str, url: &str) {
-    hub().urls.insert(browser.to_owned(), url.to_owned());
+/// The browsers with a token.
+pub fn attached() -> Vec<String> {
+    hub().tabs.keys().cloned().collect()
 }
 
-/// One DevTools message from `browser`'s page (main thread): to its agent,
-/// if it has one and the message is its own.
-pub fn from_page(browser: &str, bytes: &[u8]) {
+/// Whether `browser` has a token, so its tabs are worth publishing.
+pub fn is_attached(browser: &str) -> bool {
+    hub().tabs.contains_key(browser)
+}
+
+/// Ends the agent for `browser` when its queue overflowed (`Hub::send`).
+fn overflowed(browser: &str) {
+    engine::wake();
+    tracing::warn!("browser: the agent for {browser} stopped reading; its connection and token ended", browser = super::log_safe(browser));
+}
+
+/// The tabs of `browser` and the shown one changed (a tab opened or closed,
+/// a page said a new url or title). Ignored while it has no token.
+pub fn set_tabs(browser: &str, tabs: Vec<TabInfo>, shown: &str) {
+    let mut h = hub();
+    if !h.tabs.contains_key(browser) {
+        return;
+    }
+    let mut pane = Pane { tabs, shown: shown.to_owned() };
+    for t in &mut pane.tabs {
+        t.ready = h.ready.contains(&t.id);
+    }
+    h.tabs.insert(browser.to_owned(), pane);
+    if h.publish(browser) {
+        drop(h);
+        overflowed(browser);
+    }
+}
+
+/// `tab`'s page exists and takes DevTools messages (main thread).
+pub fn tab_ready(tab: &str) {
+    let mut h = hub();
+    h.ready.insert(tab.to_owned());
+    let browser = registry::browser_of(tab);
+    if let Some(t) = h.tabs.get_mut(browser).and_then(|p| p.tabs.iter_mut().find(|t| t.id == tab)) {
+        t.ready = true;
+    }
+    if h.publish(browser) {
+        drop(h);
+        overflowed(browser);
+    }
+}
+
+/// `tab`'s page is gone (closed, or closed to reopen): it takes no messages now.
+pub fn tab_gone(tab: &str) {
+    let mut h = hub();
+    h.ready.remove(tab);
+    h.urls.remove(tab);
+}
+
+/// The window made the tab change `ticket` asked for (`Ok(tab)`), or couldn't.
+pub fn tab_done(browser: &str, ticket: u64, result: Result<String, String>) {
     let mut h = hub();
     let Some(c) = h.conns.get_mut(browser) else { return };
-    let Some(text) = c.link.from_page(bytes) else { return };
-    if !c.push(text) {
-        h.end_agent(browser);
+    let texts = c.link.done(ticket, result);
+    if h.send(browser, texts) {
         drop(h);
-        engine::wake();
-        tracing::warn!("browser: the agent for {browser} stopped reading; its connection and token ended", browser = super::log_safe(browser));
+        overflowed(browser);
+    }
+}
+
+/// The page's committed main-frame url changed (runtime.rs, `on_address_change`).
+pub fn set_url(tab: &str, url: &str) {
+    hub().urls.insert(tab.to_owned(), url.to_owned());
+}
+
+/// One DevTools message from `tab`'s page (main thread): to its agent,
+/// if it has one and the message is its own.
+pub fn from_page(tab: &str, bytes: &[u8]) {
+    let browser = registry::browser_of(tab);
+    let mut h = hub();
+    let Some(c) = h.conns.get_mut(browser) else { return };
+    let texts = c.link.from_page(tab, bytes);
+    if h.send(browser, texts) {
+        drop(h);
+        overflowed(browser);
     }
 }
 
@@ -200,22 +300,33 @@ pub fn drain() {
     loop {
         let Some(job) = hub().jobs.pop_front() else { return };
         match job {
-            Job::ToPage { browser, conn, id, message } => {
+            Job::ToPage { browser, conn, tab, id, message } => {
                 // A message from a connection that has ended since never reaches the page.
                 if hub().conns.get(&browser).map(|c| c.id) != Some(conn) {
                     continue;
                 }
-                if !engine::send_devtools(&browser, message.as_bytes()) {
+                if !engine::send_devtools(&tab, message.as_bytes()) {
                     let mut h = hub();
                     if let Some(c) = h.conns.get_mut(&browser).filter(|c| c.id == conn)
                         && let Some(reply) = c.link.fail(id, "herdr: the page isn't there right now (opening or reopening): try again")
-                        && !c.push(reply)
+                        && h.send(&browser, vec![reply])
                     {
-                        h.end_agent(&browser);
+                        drop(h);
+                        overflowed(&browser);
                     }
                 }
             }
-            Job::Gone { browser } => engine::agent_gone(&browser),
+            Job::Tab { browser, conn, op } => {
+                if hub().conns.get(&browser).map(|c| c.id) == Some(conn) {
+                    engine::tab_op(&browser, op);
+                }
+            }
+            Job::Gone { browser, tabs } => {
+                tracing::debug!("browser: {browser}'s agent connection ended: {} page(s) to reopen", tabs.len(), browser = super::log_safe(&browser));
+                for t in &tabs {
+                    engine::agent_gone(t);
+                }
+            }
         }
     }
 }
@@ -350,7 +461,8 @@ fn serve(stream: TcpStream, port: u16, slot: Slot<'static>) {
         let id = h.next_conn;
         let (tx, rx) = mpsc::sync_channel(MAX_QUEUED);
         let queued = Arc::new(AtomicUsize::new(0));
-        h.conns.insert(browser.clone(), Conn { id, link: Link::default(), out: tx, queued: queued.clone(), socket });
+        let link = Link::new(h.tabs.get(&browser).cloned().unwrap_or_default());
+        h.conns.insert(browser.clone(), Conn { id, link, out: tx, queued: queued.clone(), socket });
         h.serving.insert(id);
         (browser, id, rx, queued)
     };
@@ -389,9 +501,7 @@ fn serve(stream: TcpStream, port: u16, slot: Slot<'static>) {
             Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => continue,
             Err(_) => break,
         };
-        if let Some(reply) = from_agent(&browser, id, &text)
-            && ws.send(Message::text(reply)).is_err()
-        {
+        if from_agent(&browser, id, &text).into_iter().any(|reply| ws.send(Message::text(reply)).is_err()) {
             break;
         }
     }
@@ -410,35 +520,41 @@ fn logged_method(text: &str) -> Option<String> {
     serde_json::from_str::<Value>(text).ok()?.get("method")?.as_str().map(super::log_safe)
 }
 
-/// One agent message: queued for the page, or an answer straight back.
-fn from_agent(browser: &str, conn: u64, text: &str) -> Option<String> {
+/// One agent message: queued for a page or the window, or answers straight back.
+fn from_agent(browser: &str, conn: u64, text: &str) -> Vec<String> {
     #[cfg(test)]
     assert!(text != TEST_PANIC, "test: a panic on the agent connection's thread");
     let method = tracing::enabled!(tracing::Level::DEBUG).then(|| logged_method(text)).flatten();
     let mut h = hub();
-    let url = h.urls.get(browser).cloned().unwrap_or_default();
-    let mut next = h.next_id;
-    let c = h.conns.get_mut(browser).filter(|c| c.id == conn)?;
-    let r = c.link.from_agent(text, &mut next, &url);
-    h.next_id = next;
-    match r {
-        FromAgent::Forward { id, message } => {
-            // Method names only (the recon log): never params, never the token.
-            if let Some(m) = &method {
-                tracing::debug!("browser: cdp {browser} forward {m}", browser = super::log_safe(browser));
-            }
-            h.jobs.push_back(Job::ToPage { browser: browser.to_owned(), conn, id, message });
-            drop(h);
-            engine::wake();
-            None
+    let Hub { conns, urls, next_id, jobs, .. } = &mut *h;
+    let Some(c) = conns.get_mut(browser).filter(|c| c.id == conn) else { return Vec::new() };
+    let r = c.link.from_agent(text, next_id, &|tab| urls.get(tab).cloned());
+    // Method names only (the recon log): never params, never the token.
+    let note = |what: &str| {
+        if let Some(m) = &method {
+            tracing::debug!("browser: cdp {browser} {what} {m}", browser = super::log_safe(browser));
         }
-        FromAgent::Reply(reply) => {
-            if let Some(m) = &method {
-                tracing::debug!("browser: cdp {browser} refused {m}", browser = super::log_safe(browser));
-            }
-            Some(reply)
+    };
+    let (job, replies) = match r {
+        FromAgent::Forward { id, tab, message } => {
+            note("forward");
+            (Some(Job::ToPage { browser: browser.to_owned(), conn, tab, id, message }), Vec::new())
         }
+        FromAgent::Tab(op) => {
+            note("tab");
+            (Some(Job::Tab { browser: browser.to_owned(), conn, op }), Vec::new())
+        }
+        FromAgent::Reply(replies) => {
+            note("answered");
+            (None, replies)
+        }
+    };
+    if let Some(job) = job {
+        jobs.push_back(job);
+        drop(h);
+        engine::wake();
     }
+    replies
 }
 
 #[cfg(test)]
@@ -475,7 +591,28 @@ mod tests {
     }
 
     fn resets(b: &str) -> usize {
-        hub().jobs.iter().filter(|j| matches!(j, Job::Gone { browser } if browser == b)).count()
+        hub().jobs.iter().filter(|j| matches!(j, Job::Gone { browser, .. } if browser == b)).count()
+    }
+
+    fn tab(b: &str, n: u32, ready: bool) -> TabInfo {
+        TabInfo { id: format!("{b}:{n}"), url: "https://example.com/".into(), title: format!("Tab {n}"), ready }
+    }
+
+    /// A pane of browser `b` with one ready tab, `b:1`.
+    fn pane(b: &str) -> Pane {
+        tab_ready(&format!("{b}:1"));
+        Pane { tabs: vec![tab(b, 1, true)], shown: format!("{b}:1") }
+    }
+
+    fn say(ws: &mut WebSocket<TcpStream>, msg: serde_json::Value) {
+        ws.send(Message::text(msg.to_string())).unwrap();
+    }
+
+    /// Connects to `url` and attaches tab `b:1`: the agent's session id.
+    fn attach_tab(ws: &mut WebSocket<TcpStream>, b: &str) -> String {
+        say(ws, serde_json::json!({ "id": 1, "method": "Target.attachToTarget", "params": { "targetId": format!("{b}:1"), "flatten": true } }));
+        assert_eq!(answer(ws)["method"], "Target.attachedToTarget");
+        answer(ws)["result"]["sessionId"].as_str().unwrap().to_owned()
     }
 
     /// An event as big as `kb` KiB (the page's events reach the agent unasked).
@@ -486,7 +623,7 @@ mod tests {
     /// Fills the socket until the connection's thread is stuck writing.
     fn stall(b: &str) {
         for _ in 0..24 {
-            from_page(b, &event(512));
+            from_page(&format!("{b}:1"), &event(512));
         }
         std::thread::sleep(Duration::from_millis(300));
     }
@@ -502,7 +639,7 @@ mod tests {
 
     #[test]
     fn an_agents_own_disconnect_ends_its_token_and_resets_the_page() {
-        let url = attach("t-disc").unwrap();
+        let url = attach("t-disc", pane("t-disc")).unwrap();
         let ws = connect(&url).unwrap();
         assert!(connected("t-disc"));
         drop(ws);
@@ -513,8 +650,9 @@ mod tests {
 
     #[test]
     fn an_agent_that_stops_reading_is_cut_off_after_the_write_timeout() {
-        let url = attach("t-stall").unwrap();
-        let _ws = connect(&url).unwrap();
+        let url = attach("t-stall", pane("t-stall")).unwrap();
+        let mut ws = connect(&url).unwrap();
+        attach_tab(&mut ws, "t-stall");
         stall("t-stall");
         assert!(connected("t-stall"));
         // Each write that moves nothing for WRITE_TIMEOUT fails; a partial one
@@ -526,8 +664,9 @@ mod tests {
 
     #[test]
     fn a_revoke_ends_a_stuck_connection_and_resets_the_page_at_once() {
-        let url = attach("t-revoke").unwrap();
-        let _ws = connect(&url).unwrap();
+        let url = attach("t-revoke", pane("t-revoke")).unwrap();
+        let mut ws = connect(&url).unwrap();
+        attach_tab(&mut ws, "t-revoke");
         stall("t-revoke");
         let id = hub().conns.get("t-revoke").unwrap().id;
         assert!(revoke("t-revoke"));
@@ -549,8 +688,8 @@ mod tests {
 
     #[test]
     fn malformed_params_get_an_error_and_the_connection_stays() {
-        let url = attach("t-params").unwrap();
-        set_url("t-params", "http://127.0.0.1:8765/browser-fixture.html");
+        let url = attach("t-params", pane("t-params")).unwrap();
+        set_url("t-params:1", "http://127.0.0.1:8765/browser-fixture.html");
         let mut ws = connect(&url).unwrap();
         ws.send(Message::text(r#"{"id":3,"method":"Target.setAutoAttach","params":[]}"#)).unwrap();
         assert_eq!(answer(&mut ws), serde_json::json!({ "id": 3, "error": { "code": -32602, "message": "herdr: params must be an object" } }));
@@ -562,8 +701,76 @@ mod tests {
     }
 
     #[test]
+    fn the_target_domain_is_answered_from_the_panes_tabs_and_never_reaches_a_page() {
+        let url = attach("t-targets", pane("t-targets")).unwrap();
+        let mut ws = connect(&url).unwrap();
+        say(&mut ws, serde_json::json!({ "id": 1, "method": "Target.getTargets" }));
+        let infos = answer(&mut ws)["result"]["targetInfos"].clone();
+        assert_eq!(infos[0]["targetId"], "t-targets:1");
+        assert_eq!(infos.as_array().unwrap().len(), 1);
+        let session = attach_tab(&mut ws, "t-targets");
+        // A tab of another pane doesn't exist here.
+        say(&mut ws, serde_json::json!({ "id": 2, "method": "Target.attachToTarget", "params": { "targetId": "t-other:1", "flatten": true } }));
+        assert_eq!(answer(&mut ws)["error"]["code"], -32601);
+        // A page request queues for that tab, under the proxy's id and without Herdr's session id.
+        say(&mut ws, serde_json::json!({ "id": 3, "method": "Runtime.evaluate", "sessionId": session, "params": { "expression": "1" } }));
+        assert!(wait(Duration::from_secs(3), || hub().jobs.iter().any(|j| matches!(j, Job::ToPage { browser, tab, message, .. } if browser == "t-targets" && tab == "t-targets:1" && !message.contains("sessionId")))));
+        assert!(!hub().jobs.iter().any(|j| matches!(j, Job::Tab { browser, .. } if browser == "t-targets")));
+    }
+
+    #[test]
+    fn a_tab_closing_ends_its_sessions_and_the_connection_stays() {
+        let b = "t-closing";
+        tab_ready("t-closing:1");
+        tab_ready("t-closing:2");
+        let two = Pane { tabs: vec![tab(b, 1, true), tab(b, 2, true)], shown: "t-closing:1".into() };
+        let url = attach(b, two).unwrap();
+        let mut ws = connect(&url).unwrap();
+        say(&mut ws, serde_json::json!({ "id": 1, "method": "Target.setDiscoverTargets", "params": { "discover": true } }));
+        assert_eq!(answer(&mut ws)["method"], "Target.targetCreated");
+        assert_eq!(answer(&mut ws)["method"], "Target.targetCreated");
+        assert_eq!(answer(&mut ws)["id"], 1);
+        let session = attach_tab(&mut ws, b);
+        // The person closes tab 1 (a command, a click): the agent hears, and keeps its connection.
+        set_tabs(b, vec![tab(b, 2, true)], "t-closing:2");
+        let detached = answer(&mut ws);
+        assert_eq!((detached["method"].as_str(), detached["params"]["sessionId"].as_str()), (Some("Target.detachedFromTarget"), Some(session.as_str())));
+        assert_eq!(answer(&mut ws), serde_json::json!({ "method": "Target.targetDestroyed", "params": { "targetId": "t-closing:1" } }));
+        say(&mut ws, serde_json::json!({ "id": 5, "method": "Target.getTargets" }));
+        let infos = answer(&mut ws)["result"]["targetInfos"].clone();
+        assert_eq!(infos.as_array().unwrap().len(), 1);
+        assert_eq!(infos[0]["targetId"], "t-closing:2");
+        assert!(connected(b), "closing a tab ended the connection");
+        assert_eq!(resets(b), 0);
+        // The close dropped the tab's url and readiness.
+        set_url("t-closing:1", "https://x/");
+        tab_gone("t-closing:1");
+        assert!(!hub().urls.contains_key("t-closing:1"));
+        // A tab change asked by the agent goes to the window and is answered when it has acted.
+        say(&mut ws, serde_json::json!({ "id": 6, "method": "Target.createTarget", "params": { "url": "https://example.com/new" } }));
+        let ticket = loop {
+            let found = hub().jobs.iter().find_map(|j| match j {
+                Job::Tab { browser, op, .. } if browser == b => Some(op.ticket),
+                _ => None,
+            });
+            if let Some(t) = found {
+                break t;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        tab_done(b, ticket, Ok("t-closing:3".into()));
+        tab_ready("t-closing:3");
+        set_tabs(b, vec![tab(b, 2, true), tab(b, 3, true)], "t-closing:3");
+        let mut seen = answer(&mut ws);
+        while seen.get("id").is_none() {
+            seen = answer(&mut ws);
+        }
+        assert_eq!(seen, serde_json::json!({ "id": 6, "result": { "targetId": "t-closing:3" } }));
+    }
+
+    #[test]
     fn a_panic_on_the_connections_thread_still_ends_its_token_and_resets_the_page() {
-        let url = attach("t-panic").unwrap();
+        let url = attach("t-panic", pane("t-panic")).unwrap();
         let mut ws = connect(&url).unwrap();
         ws.send(Message::text(TEST_PANIC)).unwrap();
         assert!(wait(Duration::from_secs(3), || !connected("t-panic")), "the connection outlived its thread");
@@ -604,11 +811,12 @@ mod tests {
 
     #[test]
     fn a_page_flood_past_the_queue_limit_ends_the_connection() {
-        let url = attach("t-flood").unwrap();
-        let _ws = connect(&url).unwrap();
+        let url = attach("t-flood", pane("t-flood")).unwrap();
+        let mut ws = connect(&url).unwrap();
+        attach_tab(&mut ws, "t-flood");
         stall("t-flood");
         for _ in 0..=MAX_QUEUED {
-            from_page("t-flood", br#"{"method":"Page.loadEventFired","params":{}}"#);
+            from_page("t-flood:1", br#"{"method":"Page.loadEventFired","params":{}}"#);
         }
         assert!(!connected("t-flood"), "the queue grew past its limit");
         assert_eq!(resets("t-flood"), 1);

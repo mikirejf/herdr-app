@@ -174,8 +174,9 @@ right-click and typing (the keyboard must stay where you left it). It writes you
   hidden until it is closed. A tab with no url has no page: its block shows
   "Browse with your agents". Closing a tab shows its right neighbour, else
   its left; the last one leaves an empty tab. `browser.navigate`, back,
-  forward, reload, zoom, viewport, DevTools and the agents' attach act on
-  the shown tab, and closing a tab ends only that tab's agent token.
+  forward, reload, zoom, viewport and DevTools act on the shown tab. An
+  agent attached to the pane sees all its tabs (below); closing a tab ends
+  only that tab's agent sessions, never the pane's token or connection.
 - No remote-debugging port is opened. `browser.devtools` opens CEF's own
   DevTools window.
 - The profile (cookies, cache) is `<app home>/browser/profile`; delete it
@@ -199,6 +200,11 @@ page with its sign-ins.
 1. `herdr-app do browser.open --url http://127.0.0.1:8765/browser-fixture.html`.
 2. In a terminal Herdr started (any agent pane), `agent-browser snapshot -i`,
    `agent-browser click @e5`, `agent-browser fill @e2 "Ada"`.
+3. `agent-browser tab` lists the pane's tabs, `tab new [url]` opens one (after
+   the shown tab, and shows it), `tab t2` switches (0.39.1 takes `t2`, not `2`),
+   `tab close` closes the one it is on. Snapshot, click, fill, eval and
+   screenshot work in the tab it is on, shown or not. A `target=_blank` link
+   or `window.open` opens a tab that agent-browser switches to by itself.
 
 Terminals that started before this Herdr (from another Herdr build, before
 you switched to this one) have none of these variables, and a running
@@ -223,9 +229,30 @@ __agent-browser-provider`, first) and an `AGENT_BROWSER_SESSION` of their
 own. The provider asks the window over the control socket for the caller's
 browser (`HERDR_BROWSER=<id>` picks one in the caller's space; else the
 browser in its tab, else the one in its space the person focused last) and
-gets `ws://127.0.0.1:<port>/<token>`: a 256-bit token for that one page.
-Herdr's proxy passes CDP messages from that socket to the page's in-process
-DevTools session through an allowlist (`src/browser/agent.rs`): no
+gets `ws://127.0.0.1:<port>/<token>`: a 256-bit token for that one pane, with
+`directPage: false`: the socket is the pane's browser endpoint, with the pane's
+tabs as its page targets. The proxy answers the Target domain itself
+(`Target.setDiscoverTargets`, `getTargets`, `getTargetInfo`, `createTarget`,
+`attachToTarget` with `flatten: true`, `detachFromTarget`, `closeTarget`,
+`activateTarget`), only from that pane's tabs: none of it reaches Chromium and a
+tab of another pane is never named. A target id is the tab's runtime id
+(`b1:3`); a session id is Herdr's own (`HERDR…`), stripped on the way to the
+tab's DevTools session and put back on what comes from it, with
+several sessions per tab allowed. Attaching a tab whose page was never created
+creates it, hidden (an empty tab opens at `about:blank`). `createTarget` opens a
+tab after the shown one and shows it, `activateTarget` and `Page.bringToFront`
+select a tab (the app window is not raised); attaching or driving a tab does
+not change which one the person sees (agent-browser 0.39.1's `tab t2` sends no
+`bringToFront`). `targetCreated`, `targetInfoChanged` and `targetDestroyed` follow
+the pane's tabs whoever changed them (the person, `browser.tab.*`, a popup,
+the agent). `getTargets` lists the shown tab first, because agent-browser starts
+on the first page that answers (so `t1` is the shown tab at connect). A page's
+own `Target.setAutoAttach` (frames) goes to the tab's session with `flatten`
+forced on, and the frame sessions it reports route back to that tab; a
+`Target.setAutoAttach` on the browser itself (agent-browser sends it only with
+network filtering or proxy auth) is refused with an error. Every other message
+goes to its tab's in-process DevTools session through an allowlist
+(`src/browser/agent.rs`), the URL gate included (a `createTarget` url too): no
 `Target.attachToBrowserTarget`, no CDP cookie methods, no file inputs, no
 downloads; `Cookie`, `Set-Cookie`, `Authorization` and
 `Proxy-Authorization` headers are stripped from network events. Script in
@@ -239,13 +266,14 @@ refused; agent-browser carries on without it. (0.39.1 has no "iPhone 15 Pro"
 device; it says so itself.) The proxy refuses any upgrade with an `Origin` header or a
 `Host` other than `127.0.0.1:<port>` or `localhost:<port>`, and answers
 anything but an upgrade with a bare 404. A new attach
-for the same page, closing the browser and quitting end the
-token and the connection: Herdr shuts the socket itself, so an agent that
+for the same pane, closing the browser and quitting end the
+token and the connection (closing a tab does not): Herdr shuts the socket itself, so an agent that
 stopped reading can't hold it open. A connection's own end (the agent
 closed it, a write it didn't take in 5 s, or more than 1024 messages or
 32 MiB waiting for it) ends its token too; agent-browser asks the provider
-for a new one. Whenever a connection ends, the page reopens at its url so
-nothing the agent set (headers, overrides) stays. The reopen keeps the
+for a new one. Whenever a connection ends, the pages it sent
+messages to reopen at their urls so nothing the agent set (headers,
+overrides) stays. The reopen keeps the
 profile's storage (cookies, local storage).
 Every attach is a line in the app's log, never the token or port. The log
 is the app's stderr: `just browser-dev` keeps it in `/tmp/hbd.dev/app.log`, a

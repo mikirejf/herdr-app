@@ -121,11 +121,14 @@ capture or permissions. It needs a running window that has drawn a frame;
 ## Browser panes and agent-browser
 
 Browser panes (macOS builds with the browser feature) show in `herdr-app ls`
-under `browsers`; a browser has tabs (`tabs`, `active`) and you drive its shown tab:
-`browser.tab.new`, `browser.tab.select --index <n>` (0 is the first) and `browser.tab.close`
-change which. You can drive one with `agent-browser` (`snapshot -i`,
-`click @e3`, `fill @e2 text`); there is nothing to switch on. It is the
-person's own browser profile, sign-ins included. If
+under `browsers`; a browser has tabs (`tabs`, `active`): `browser.tab.new`,
+`browser.tab.select --index <n>` (0 is the first) and `browser.tab.close` change the shown one.
+You can drive one with `agent-browser` (`snapshot -i`, `click @e3`, `fill @e2 text`); there is
+nothing to switch on. It sees every tab of the pane: `agent-browser tab` lists them (the shown one
+first), `tab new [url]` opens one and shows it, `tab t2` makes t2 the one your commands act on,
+`tab close` closes one; a link or `window.open` that opens a tab is picked up. A tab you switch to
+may be hidden: it is not the person's shown tab until `tab new` or the person selects it.
+It is the person's own browser profile, sign-ins included. If
 agent-browser says `Plugin 'herdr' returned success=false`, run
 `agent-browser plugin run herdr herdr.check` to see why. Terminals opened
 before this version or with `hc run` don't have the environment;

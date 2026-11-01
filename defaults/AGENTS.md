@@ -596,12 +596,13 @@ The main ones:
   browser; an agent's own Emulation override replaces it, last one wins). `herdr-app ls` and `browsers()` list them
   (with `zoom` and `viewport`, and every tab as `tabs: [{id, url, title, loading}]` with the shown one's
   index as `active`; the other fields describe the shown tab, and navigate, back, forward, reload, zoom,
-  viewport and DevTools act on it; a tab's page is created when it is first shown, and a popup or
-  `target=_blank` link opens as a new tab);
+  viewport and DevTools act on it; a tab's page is created when it is first shown or an agent attaches
+  it, and a popup or `target=_blank` link opens as a new tab);
   a pane's `browser` names its page. Click a page to type in it; global keys still work.
   Pages are http, https or about:blank. Every browser uses the person's own profile
   (cookies and sign-ins included), and `agent-browser` can drive any of them with no
-  prompt. `herdr-app ls` and `browsers()` show a page's full url and title.
+  prompt, every tab of the pane (`agent-browser tab`, `tab new [url]`, `tab t2`, `tab close`; a popup
+  is picked up as it opens). `herdr-app ls` and `browsers()` show a page's full url and title.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {index | terminal}` (index: position in
   the agents list, 1 = first; the agents mod numbers its first nine rows).
 - Layout: `layout.switch {name?}`, `layout.toggle {id}`, `layout.show {id}`, `layout.hide {id}`,

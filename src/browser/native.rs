@@ -23,6 +23,8 @@ pub enum Event {
     Popup { opener: String, tab: String, url: String },
     /// The engine never created that popup's page.
     PopupAborted { opener: String, tab: String },
+    /// An agent asked to change a browser's tabs (a Target method of its connection).
+    Agent { browser: String, op: agent::TabOp },
     /// A mouse press on Herdr (outside every page) while a page had the keyboard.
     ClickedHerdr,
     /// A page hid under an overlay or came back: who has the keyboard may change.
@@ -52,7 +54,51 @@ impl Browsers {
     }
 
     pub fn apply(&mut self, event: Event) -> Update {
+        let update = self.apply_event(event);
+        // An agent attached to this browser hears what changed in its tabs.
+        self.publish_tabs(&update.browser);
+        update
+    }
+
+    /// Tells the agent attached to `browser` (if any) about its tabs.
+    fn publish_tabs(&self, browser: &str) {
+        if !proxy::is_attached(browser) {
+            return;
+        }
+        if let Some(pane) = self.pane(browser) {
+            proxy::set_tabs(browser, pane.tabs, &pane.shown);
+        }
+    }
+
+    /// `browser`'s tabs as an agent sees them. (Which are ready is the proxy's to say.)
+    fn pane(&self, browser: &str) -> Option<agent::Pane> {
+        let e = self.registry.get(browser)?;
+        let tabs = e.tabs.iter().map(|t| agent::TabInfo { id: t.id.clone(), url: t.page.url.clone(), title: t.page.title.clone(), ready: false });
+        Some(agent::Pane { tabs: tabs.collect(), shown: e.tab().id.clone() })
+    }
+
+    /// An agent's tab change, the way `browser.tab.*` makes it. Returns the
+    /// tab it concerns; its page opens at the next `reconcile`.
+    fn agent_tab(&mut self, browser: &str, action: agent::TabAction) -> Result<String, String> {
+        let owns = |s: &Self, tab: &str| s.registry.tab(tab).is_some_and(|(e, _)| e.browser == browser);
+        match action {
+            agent::TabAction::New { url } => self.registry.new_tab(browser, &url),
+            agent::TabAction::Open { tab } => self.registry.want_open(browser, &tab).map(|()| tab),
+            agent::TabAction::Select { tab } => self.registry.select_by_id(browser, &tab).map(|()| tab),
+            agent::TabAction::Close { tab } if owns(self, &tab) => self.registry.close_tab_by_id(&tab).ok_or_else(|| "the tab is gone".to_owned()),
+            agent::TabAction::Close { tab } => Err(format!("{tab} is not a tab of {browser}")),
+        }
+    }
+
+    fn apply_event(&mut self, event: Event) -> Update {
         match event {
+            Event::Agent { browser, op } => {
+                let done = self.agent_tab(&browser, op.action);
+                // The agent hears the tab change before the answer to its request.
+                self.publish_tabs(&browser);
+                proxy::tab_done(&browser, op.ticket, done);
+                Update { browser, tabs: true, ..Update::default() }
+            }
             Event::Page { tab, page } => {
                 let moved = self.registry.page(&tab, page);
                 Update { url: moved, browser: registry::browser_of(&tab).to_owned(), ..Update::default() }
@@ -108,11 +154,17 @@ impl Browsers {
     /// layout), closes those whose block is gone.
     pub fn reconcile(&mut self, model: &Model, chrome: &Node, window: &mut Window, cx: &mut App) {
         let changes = self.registry.reconcile(&registry::blocks(model, chrome));
-        // Tab ids: closing one tab revokes only that tab's agent token.
         for id in &changes.close {
-            proxy::revoke(id);
             engine::close(id);
             view::remove(id);
+        }
+        // A closed browser ends its agent's token; the tabs of the others follow the registry.
+        for browser in proxy::attached() {
+            if self.registry.get(&browser).is_none() {
+                proxy::revoke(&browser);
+            } else {
+                self.publish_tabs(&browser);
+            }
         }
         if changes.open.is_empty() {
             return;
@@ -221,6 +273,7 @@ impl Browsers {
             }
             other => return Err(format!("{other} is not a browser tab command")),
         }
+        self.publish_tabs(browser);
         Ok(self.info(browser, false).unwrap_or_default())
     }
 
@@ -299,10 +352,9 @@ impl Browsers {
         if check {
             return Ok(json!({ "browser": browser, "pane": pane, "space": space, "selection": how }));
         }
-        // One page for now: the shown tab's.
-        let tab = self.shown_page("attach", &browser)?;
-        let url = proxy::attach(&tab)?;
-        Ok(json!({ "cdpUrl": url, "browser": browser, "tab": tab, "pane": pane, "space": space, "selection": how }))
+        // The whole pane: the agent sees its tabs, opened or not.
+        let url = proxy::attach(&browser, self.pane(&browser).ok_or("the browser went away")?)?;
+        Ok(json!({ "cdpUrl": url, "browser": browser, "pane": pane, "space": space, "selection": how }))
     }
 
     /// The pages hidden under an overlay now (they can't have the keyboard).

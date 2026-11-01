@@ -4,9 +4,11 @@
 //! The path: `agent-browser` in a Herdr terminal runs `herdr-app
 //! __agent-browser-provider` (its plugin), which asks the window over the
 //! control socket to `attach`. The window picks the caller's browser and hands back
-//! `ws://127.0.0.1:<port>/<token>`. proxy.rs serves that socket and passes
-//! CDP messages to that one page's in-process DevTools session, through the
-//! allowlist below. CEF opens no remote-debugging port.
+//! `ws://127.0.0.1:<port>/<token>`: one token per browser pane. proxy.rs serves
+//! that socket as the pane's browser endpoint: the Target domain is answered
+//! here from the pane's tabs, and every other message goes to one tab's
+//! in-process DevTools session, through the allowlist below. CEF opens no
+//! remote-debugging port.
 
 // Default builds compile these rules only for their tests; the browser feature uses them.
 #![cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
@@ -14,7 +16,8 @@
 use serde_json::{Map, Value, json};
 
 pub use super::{not_in_herdr, public_url};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const PROTOCOL: &str = "agent-browser.plugin.v1";
 pub const PLUGIN: &str = "herdr";
@@ -336,7 +339,12 @@ pub fn allowed_method(method: &str) -> bool {
             "enable" | "disable" | "getResponseBody" | "getRequestPostData" | "setExtraHTTPHeaders" | "emulateNetworkConditions"
                 | "setCacheDisabled" | "setUserAgentOverride"
         ),
-        "Target" => matches!(name, "setAutoAttach" | "detachFromTarget" | "getTargetInfo"),
+        // The ones Herdr answers from the pane's tabs (never sent to CEF) and the frame ones CEF answers.
+        "Target" => matches!(
+            name,
+            "setAutoAttach" | "detachFromTarget" | "getTargetInfo" | "setDiscoverTargets" | "getTargets" | "createTarget" | "attachToTarget"
+                | "closeTarget" | "activateTarget"
+        ),
         "Browser" => name == "getVersion",
         _ => false,
     }
@@ -348,31 +356,161 @@ fn navigation(method: &str) -> bool {
     matches!(method, "Page.navigate" | "Page.navigateToHistoryEntry" | "Page.reload" | "Page.getFrameTree" | "Page.enable")
 }
 
+/// A tab of a browser pane, as a CDP page target.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TabInfo {
+    /// The tab's runtime id (`b1:3`), also its targetId.
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    /// The tab's CEF browser exists, so its DevTools session takes messages.
+    pub ready: bool,
+}
+
+/// The tabs one agent connection sees (a connection is for a whole browser
+/// pane), and the one the person has shown.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pane {
+    pub tabs: Vec<TabInfo>,
+    pub shown: String,
+}
+
+impl Pane {
+    fn tab(&self, id: &str) -> Option<&TabInfo> {
+        self.tabs.iter().find(|t| t.id == id)
+    }
+}
+
+/// What a connection asks of the window, which owns the tabs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TabAction {
+    /// `Target.createTarget`: a tab after the shown one, shown.
+    New { url: String },
+    /// `Target.attachToTarget` on a tab whose page doesn't exist yet.
+    Open { tab: String },
+    /// `Target.activateTarget`, `Page.bringToFront`.
+    Select { tab: String },
+    /// `Target.closeTarget`.
+    Close { tab: String },
+}
+
+/// A [`TabAction`] and the number its answer (`Link::done`) comes back under.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabOp {
+    pub ticket: u64,
+    pub action: TabAction,
+}
+
 /// What to do with one message from the agent.
 #[derive(Debug, PartialEq)]
 pub enum FromAgent {
-    /// Send to the page, under the proxy's own request id.
-    Forward { id: i64, message: String },
-    /// Answer the agent directly (refused).
-    Reply(String),
+    /// Send to `tab`'s page, under the proxy's own request id.
+    Forward { id: i64, tab: String, message: String },
+    /// Answer the agent directly: events first, the answer last.
+    Reply(Vec<String>),
+    /// The window changes the tabs; the answer follows (`Link::done`).
+    Tab(TabOp),
 }
 
-/// One agent connection's state: its requests in flight (the proxy's id →
-/// the agent's), and the child sessions the page auto-attached for it.
-#[derive(Default)]
+/// Session ids Herdr hands out for tabs, unique in the app run so an id an
+/// old connection held never names another tab.
+static SESSION_NUMBER: AtomicU64 = AtomicU64::new(0);
+
+/// A request waiting on a page: the agent's id and session, and the tab asked.
+struct Pending {
+    agent: Value,
+    session: Option<String>,
+    tab: String,
+}
+
+enum Then {
+    /// A tab made for `createTarget`: answers with its id once its page exists.
+    Created,
+    /// `attachToTarget` on a tab whose page doesn't exist yet.
+    Attached,
+    /// A tab change: answers with this when the window has made it.
+    Answer(Value),
+}
+
+struct Waiting {
+    agent: Value,
+    session: Option<String>,
+    ticket: u64,
+    tab: Option<String>,
+    then: Then,
+}
+
+/// Where a message is addressed: the browser, or a session (a tab's own, or
+/// one of its frames').
+enum Route {
+    Browser,
+    Tab(String),
+}
+
+/// One agent connection's state. It is for one browser pane: Herdr is the
+/// browser endpoint, with the pane's tabs as page targets. Sessions are
+/// flat: a tab's session ids are Herdr's, stripped on the way to the tab's
+/// DevTools session and put back on what comes from it; the sessions the page
+/// itself auto-attaches (frames) keep CEF's ids and are mapped to their tab.
 pub struct Link {
-    pending: HashMap<i64, Value>,
-    /// sessionId → targetId, from `Target.attachedToTarget`.
-    children: HashMap<String, String>,
+    pane: Pane,
+    discover: bool,
+    /// session id → tab id: the sessions this connection attached.
+    sessions: HashMap<String, String>,
+    /// CEF's child session id → (tab id, targetId), from `Target.attachedToTarget`.
+    children: HashMap<String, (String, String)>,
+    /// The proxy's request id → the request.
+    pending: HashMap<i64, Pending>,
+    waiting: Vec<Waiting>,
+    /// Tabs this connection sent a message to: they reopen when it ends.
+    touched: BTreeSet<String>,
+    ticket: u64,
 }
 
 impl Link {
+    pub fn new(pane: Pane) -> Link {
+        Link {
+            pane,
+            discover: false,
+            sessions: HashMap::new(),
+            children: HashMap::new(),
+            pending: HashMap::new(),
+            waiting: Vec::new(),
+            touched: BTreeSet::new(),
+            ticket: 0,
+        }
+    }
+
+    /// The tabs this connection sent messages to.
+    pub fn touched(&self) -> Vec<String> {
+        self.touched.iter().cloned().collect()
+    }
+
+    fn full(&self) -> bool {
+        self.pending.len() + self.waiting.len() >= MAX_IN_FLIGHT
+    }
+
+    fn info(&self, tab: &TabInfo) -> Value {
+        json!({
+            "targetId": tab.id, "type": "page", "title": tab.title, "url": tab.url,
+            "attached": self.sessions.values().any(|t| *t == tab.id), "canAccessOpener": false,
+        })
+    }
+
+    /// The tab's url for the URL gate: the page's committed one (`url_of`),
+    /// else the url the tab was made with.
+    fn page_url(&self, tab: &str, url_of: &dyn Fn(&str) -> Option<String>) -> String {
+        url_of(tab).filter(|u| !u.is_empty()).or_else(|| self.pane.tab(tab).map(|t| t.url.clone())).unwrap_or_default()
+    }
+
     /// Checks one agent message against the allowlist and rewrites its id
-    /// (`next` is the browser's id counter). `page_url`: the page's
-    /// committed main-frame url.
-    pub fn from_agent(&mut self, text: &str, next: &mut i64, page_url: &str) -> FromAgent {
+    /// (`next` is the proxy's id counter). Target methods are answered here,
+    /// from the pane's tabs, and never reach a page. `url_of`: a tab's
+    /// committed main-frame url (the URL gate).
+    pub fn from_agent(&mut self, text: &str, next: &mut i64, url_of: &dyn Fn(&str) -> Option<String>) -> FromAgent {
+        let one = |text: String| FromAgent::Reply(vec![text]);
         let Ok(Value::Object(mut msg)) = serde_json::from_str::<Value>(text) else {
-            return FromAgent::Reply(error(&Value::Null, None, -32700, "herdr: not a JSON object"));
+            return one(error(&Value::Null, None, -32700, "herdr: not a JSON object"));
         };
         let id = msg.get("id").cloned().unwrap_or(Value::Null);
         // A session id is a string or absent. Anything else is refused here,
@@ -380,26 +518,29 @@ impl Link {
         let session = match msg.get("sessionId") {
             None => None,
             Some(Value::String(s)) => Some(s.clone()).filter(|s| !s.is_empty()),
-            Some(_) => return FromAgent::Reply(error(&id, None, -32600, "herdr: sessionId must be a string")),
+            Some(_) => return one(error(&id, None, -32600, "herdr: sessionId must be a string")),
         };
-        let refuse = |m: &str| FromAgent::Reply(error(&id, session.as_deref(), -32601, m));
+        let refuse = |m: &str| one(error(&id, session.as_deref(), -32601, m));
         let Some(method) = msg.get("method").and_then(Value::as_str).map(str::to_owned) else {
             return refuse("herdr: a request needs an id and a method");
         };
         if !(id.is_i64() || id.is_u64()) {
             return refuse("herdr: a request needs an id and a method");
         }
-        if let Some(s) = &session
-            && !self.children.contains_key(s)
-        {
-            return refuse(&format!("herdr: unknown session {s}"));
-        }
+        let route = match session.as_deref() {
+            // Detaching a frame's session may be asked at the root: it goes to the frame's tab.
+            None if method == "Target.detachFromTarget" => match msg.get("params").and_then(|p| p.get("sessionId")).and_then(Value::as_str).and_then(|s| self.children.get(s)) {
+                Some((tab, _)) => Route::Tab(tab.clone()),
+                None => Route::Browser,
+            },
+            None => Route::Browser,
+            Some(s) => match self.sessions.get(s).or_else(|| self.children.get(s).map(|(tab, _)| tab)) {
+                Some(tab) => Route::Tab(tab.clone()),
+                None => return refuse(&format!("herdr: unknown session {s}")),
+            },
+        };
         if !allowed_method(&method) {
             return refuse(&format!("herdr: {method} is not allowed for agents"));
-        }
-        if !allowed_url(page_url) && !navigation(&method) {
-            let scheme = page_url.split(':').next().unwrap_or_default();
-            return refuse(&format!("herdr: the page is at {scheme}:, not an http, https or about:blank page: navigate it first"));
         }
         // Every check below reads (and setAutoAttach writes) params as an
         // object: anything else is an error answer, never a panic.
@@ -408,22 +549,260 @@ impl Link {
                 msg.insert("params".into(), json!({}));
             }
             Some(Value::Object(_)) => {}
-            Some(_) => return FromAgent::Reply(error(&id, session.as_deref(), -32602, "herdr: params must be an object")),
+            Some(_) => return one(error(&id, session.as_deref(), -32602, "herdr: params must be an object")),
         }
         let params = msg.entry("params").or_insert_with(|| json!({}));
-        if let Err(m) = self.check_params(&method, params) {
+        let asked = Asked { id: &id, session: session.as_deref() };
+        if let Some(answer) = self.target_method(&method, &route, &asked, params) {
+            return answer;
+        }
+        let tab = match &route {
+            Route::Tab(tab) => tab.clone(),
+            // The one page-less method that goes to a page: Chromium's version.
+            Route::Browser if method == "Browser.getVersion" => {
+                let ready = self.pane.tabs.iter().filter(|t| t.ready);
+                match ready.clone().find(|t| t.id == self.pane.shown).or_else(|| ready.clone().next()) {
+                    Some(t) => t.id.clone(),
+                    None => return refuse("herdr: no page is open in this browser yet"),
+                }
+            }
+            Route::Browser => {
+                return refuse(&format!("herdr: {method} needs a session: attach a tab first (Target.attachToTarget with flatten: true)"));
+            }
+        };
+        if matches!(route, Route::Tab(_)) {
+            let page_url = self.page_url(&tab, url_of);
+            if !allowed_url(&page_url) && !navigation(&method) {
+                let scheme = page_url.split(':').next().unwrap_or_default();
+                return refuse(&format!("herdr: the page is at {scheme}:, not an http, https or about:blank page: navigate it first"));
+            }
+        }
+        if let Err(m) = self.check_params(&method, params, &tab) {
             return refuse(&m);
         }
-        if self.pending.len() >= MAX_IN_FLIGHT {
+        if self.full() {
             return refuse("herdr: too many requests in flight");
         }
+        if matches!(route, Route::Tab(_)) {
+            self.touched.insert(tab.clone());
+        }
         *next += 1;
-        self.pending.insert(*next, id);
+        self.pending.insert(*next, Pending { agent: id, session: session.clone(), tab: tab.clone() });
+        msg.remove("sessionId");
+        // A frame's session is CEF's own: it stays on the message.
+        if let Some(s) = session.filter(|s| self.children.contains_key(s)) {
+            msg.insert("sessionId".into(), json!(s));
+        }
         msg.insert("id".into(), json!(*next));
-        FromAgent::Forward { id: *next, message: Value::Object(msg).to_string() }
+        FromAgent::Forward { id: *next, tab, message: Value::Object(msg).to_string() }
     }
 
-    fn check_params(&self, method: &str, params: &mut Value) -> Result<(), String> {
+    /// The Target domain and `Page.bringToFront`, from the pane's tabs. None:
+    /// not one of these (or a frame's, which the page answers).
+    fn target_method(&mut self, method: &str, route: &Route, asked: &Asked, params: &Value) -> Option<FromAgent> {
+        let reply = |out: Vec<String>| Some(FromAgent::Reply(out));
+        let refuse = |m: &str| reply(vec![asked.error(-32601, m)]);
+        let target = params.get("targetId").and_then(Value::as_str);
+        let own_tab = |link: &Link| target.filter(|t| link.pane.tab(t).is_some());
+        let no_tab = || refuse(&format!("herdr: {} is not a tab of this browser", target.unwrap_or("(no targetId)")));
+        match method {
+            "Target.setDiscoverTargets" => {
+                self.discover = params.get("discover").and_then(Value::as_bool).unwrap_or(false);
+                let mut out: Vec<String> = Vec::new();
+                if self.discover {
+                    out.extend(self.pane.tabs.iter().map(|t| event("Target.targetCreated", json!({ "targetInfo": self.info(t) }), None)));
+                }
+                out.push(asked.answer(json!({})));
+                reply(out)
+            }
+            "Target.getTargets" => {
+                // The shown tab first: agent-browser starts on the first page that answers.
+                let shown = self.pane.tabs.iter().filter(|t| t.id == self.pane.shown);
+                let rest = self.pane.tabs.iter().filter(|t| t.id != self.pane.shown);
+                let infos: Vec<Value> = shown.chain(rest).map(|t| self.info(t)).collect();
+                reply(vec![asked.answer(json!({ "targetInfos": infos }))])
+            }
+            "Target.getTargetInfo" => {
+                let tab = match (own_tab(self), route) {
+                    (Some(t), _) => t,
+                    (None, Route::Tab(t)) if target.is_none() && self.sessions.contains_key(asked.session.unwrap_or_default()) => t.as_str(),
+                    // A frame of a tab goes to the page; at the root, only tabs are known.
+                    (None, Route::Browser) => return no_tab(),
+                    _ => return None,
+                };
+                let info = self.info(self.pane.tab(tab)?);
+                reply(vec![asked.answer(json!({ "targetInfo": info }))])
+            }
+            "Target.createTarget" => {
+                let url = params.get("url").and_then(Value::as_str).filter(|u| !u.is_empty()).unwrap_or(super::registry::BLANK);
+                if !allowed_url(url) {
+                    return refuse(&format!("herdr: only http, https and about:blank pages open, not {url}"));
+                }
+                self.ask(asked, None, Then::Created, TabAction::New { url: url.to_owned() })
+            }
+            "Target.attachToTarget" => {
+                if params.get("flatten").and_then(Value::as_bool) != Some(true) {
+                    return refuse("herdr: only flat sessions: attachToTarget needs flatten: true");
+                }
+                let Some(tab) = own_tab(self) else { return no_tab() };
+                if self.pane.tab(tab)?.ready {
+                    return reply(self.attach(tab, asked));
+                }
+                self.ask(asked, Some(tab), Then::Attached, TabAction::Open { tab: tab.to_owned() })
+            }
+            "Target.detachFromTarget" => {
+                let session = params.get("sessionId").and_then(Value::as_str)?;
+                if !self.sessions.contains_key(session) {
+                    return None;
+                }
+                let mut out = self.detach(session);
+                out.push(asked.answer(json!({})));
+                reply(out)
+            }
+            "Target.closeTarget" => {
+                let Some(tab) = own_tab(self) else { return no_tab() };
+                self.ask(asked, Some(tab), Then::Answer(json!({ "success": true })), TabAction::Close { tab: tab.to_owned() })
+            }
+            "Target.activateTarget" => {
+                let Some(tab) = own_tab(self) else { return no_tab() };
+                self.ask(asked, Some(tab), Then::Answer(json!({})), TabAction::Select { tab: tab.to_owned() })
+            }
+            // Selects the tab in the pane; the app window is not raised.
+            "Page.bringToFront" => {
+                let Route::Tab(tab) = route else { return None };
+                let tab = tab.clone();
+                self.ask(asked, Some(&tab), Then::Answer(json!({})), TabAction::Select { tab: tab.clone() })
+            }
+            // agent-browser sends it at the browser only with network filtering or proxy auth.
+            "Target.setAutoAttach" if matches!(route, Route::Browser) => {
+                refuse("herdr: browser-level Target.setAutoAttach is not supported: Herdr's browser endpoint has no auto-attach for the whole browser")
+            }
+            _ => None,
+        }
+    }
+
+    /// Asks the window for a tab change; the answer waits for `done`.
+    fn ask(&mut self, asked: &Asked, tab: Option<&str>, then: Then, action: TabAction) -> Option<FromAgent> {
+        if self.full() {
+            return Some(FromAgent::Reply(vec![asked.error(-32601, "herdr: too many requests in flight")]));
+        }
+        self.ticket += 1;
+        let ticket = self.ticket;
+        self.waiting.push(Waiting { agent: asked.id.clone(), session: asked.session.map(str::to_owned), ticket, tab: tab.map(str::to_owned), then });
+        Some(FromAgent::Tab(TabOp { ticket, action }))
+    }
+
+    /// A new session on `tab`: `attachedToTarget`, then the answer.
+    fn attach(&mut self, tab: &str, asked: &Asked) -> Vec<String> {
+        let session = format!("HERDR{:027}", SESSION_NUMBER.fetch_add(1, Ordering::Relaxed) + 1);
+        self.sessions.insert(session.clone(), tab.to_owned());
+        self.touched.insert(tab.to_owned());
+        let info = self.pane.tab(tab).map(|t| self.info(t)).unwrap_or_default();
+        vec![
+            event("Target.attachedToTarget", json!({ "sessionId": session, "targetInfo": info, "waitingForDebugger": false }), None),
+            asked.answer(json!({ "sessionId": session })),
+        ]
+    }
+
+    /// Ends a session of a tab. With its last one the tab's frame sessions go too.
+    fn detach(&mut self, session: &str) -> Vec<String> {
+        let Some(tab) = self.sessions.remove(session) else { return Vec::new() };
+        let mut out = Vec::new();
+        if !self.sessions.values().any(|t| *t == tab) {
+            let frames: Vec<(String, String)> = self.children.iter().filter(|(_, (t, _))| *t == tab).map(|(s, (_, target))| (s.clone(), target.clone())).collect();
+            for (frame, target) in frames {
+                self.children.remove(&frame);
+                out.push(event("Target.detachedFromTarget", json!({ "sessionId": frame, "targetId": target }), Some(session)));
+            }
+        }
+        out.push(event("Target.detachedFromTarget", json!({ "sessionId": session, "targetId": tab }), None));
+        out
+    }
+
+    /// The tab closed: its sessions end, and what was asked of it fails.
+    fn gone(&mut self, tab: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let sessions: Vec<String> = self.sessions.iter().filter(|(_, t)| *t == tab).map(|(s, _)| s.clone()).collect();
+        for s in sessions {
+            out.extend(self.detach(&s));
+        }
+        let lost: Vec<i64> = self.pending.iter().filter(|(_, p)| p.tab == tab).map(|(id, _)| *id).collect();
+        for id in lost {
+            out.extend(self.fail(id, "herdr: the tab closed"));
+        }
+        // A tab change in flight is answered by `done`, closing included.
+        let (lost, kept): (Vec<Waiting>, Vec<Waiting>) =
+            std::mem::take(&mut self.waiting).into_iter().partition(|w| w.tab.as_deref() == Some(tab) && !matches!(w.then, Then::Answer(_)));
+        self.waiting = kept;
+        out.extend(lost.into_iter().map(|w| error(&w.agent, w.session.as_deref(), -32000, "herdr: the tab closed")));
+        out
+    }
+
+    /// The window changed the tabs for `ticket` (`Ok(tab id)`), or couldn't.
+    pub fn done(&mut self, ticket: u64, result: Result<String, String>) -> Vec<String> {
+        let Some(at) = self.waiting.iter().position(|w| w.ticket == ticket) else { return Vec::new() };
+        match result {
+            Err(e) => {
+                let w = self.waiting.remove(at);
+                vec![error(&w.agent, w.session.as_deref(), -32000, &e)]
+            }
+            Ok(tab) => {
+                if let Then::Answer(answer) = &self.waiting[at].then {
+                    let (answer, w) = (answer.clone(), self.waiting.remove(at));
+                    return vec![answer_to(&w.agent, w.session.as_deref(), answer)];
+                }
+                self.waiting[at].tab.get_or_insert(tab);
+                self.release()
+            }
+        }
+    }
+
+    /// Answers what waited for a page that exists now.
+    fn release(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.waiting.len() {
+            let ready = self.waiting[i].tab.as_deref().and_then(|t| self.pane.tab(t)).is_some_and(|t| t.ready);
+            if !ready || matches!(self.waiting[i].then, Then::Answer(_)) {
+                i += 1;
+                continue;
+            }
+            let w = self.waiting.remove(i);
+            let tab = w.tab.clone().unwrap_or_default();
+            match w.then {
+                Then::Created => out.push(answer_to(&w.agent, w.session.as_deref(), json!({ "targetId": tab }))),
+                _ => out.extend(self.attach(&tab, &Asked { id: &w.agent, session: w.session.as_deref() })),
+            }
+        }
+        out
+    }
+
+    /// The pane's tabs changed (a tab opened, closed, moved, its page said
+    /// something new, its page now exists): what the agent hears of it.
+    pub fn sync(&mut self, pane: Pane) -> Vec<String> {
+        let old = std::mem::replace(&mut self.pane, pane);
+        let mut out = Vec::new();
+        let removed: Vec<String> = old.tabs.iter().filter(|t| self.pane.tab(&t.id).is_none()).map(|t| t.id.clone()).collect();
+        for id in removed {
+            out.extend(self.gone(&id));
+            if self.discover {
+                out.push(event("Target.targetDestroyed", json!({ "targetId": id }), None));
+            }
+        }
+        if self.discover {
+            for t in &self.pane.tabs {
+                match old.tab(&t.id) {
+                    None => out.push(event("Target.targetCreated", json!({ "targetInfo": self.info(t) }), None)),
+                    Some(o) if (&o.url, &o.title) != (&t.url, &t.title) => out.push(event("Target.targetInfoChanged", json!({ "targetInfo": self.info(t) }), None)),
+                    Some(_) => {}
+                }
+            }
+        }
+        out.extend(self.release());
+        out
+    }
+
+    fn check_params(&self, method: &str, params: &mut Value, tab: &str) -> Result<(), String> {
         let s = |k: &str| params.get(k).and_then(Value::as_str);
         match method {
             "Page.navigate" => {
@@ -443,8 +822,9 @@ impl Link {
             "Target.detachFromTarget" if !s("sessionId").is_some_and(|x| self.children.contains_key(x)) => {
                 return Err("herdr: detachFromTarget needs a session this connection attached".into());
             }
-            "Target.getTargetInfo" if s("targetId").is_some_and(|t| !self.children.values().any(|c| c == t)) => {
-                return Err("herdr: getTargetInfo only for this page and its own frames".into());
+            // The tabs were answered before; what is left is a frame of this tab.
+            "Target.getTargetInfo" if !s("targetId").is_none_or(|t| self.children.values().any(|(owner, target)| owner == tab && target == t)) => {
+                return Err("herdr: getTargetInfo only for this browser's tabs and their own frames".into());
             }
             _ => {}
         }
@@ -454,23 +834,32 @@ impl Link {
     /// A forwarded request the page never got (it was reopening): the
     /// agent's error answer, or None when it's no longer in flight.
     pub fn fail(&mut self, id: i64, message: &str) -> Option<String> {
-        let agent = self.pending.remove(&id)?;
-        Some(error(&agent, None, -32000, message))
+        let p = self.pending.remove(&id)?;
+        Some(error(&p.agent, p.session.as_deref(), -32000, message))
     }
 
-    /// One message from the page: an answer goes back under the agent's own
-    /// id; an event goes out only for this page or its own child sessions,
-    /// with cookies stripped. None: drop it.
-    pub fn from_page(&mut self, bytes: &[u8]) -> Option<String> {
+    /// One message from `tab`'s page: an answer goes back under the agent's
+    /// own id and session; an event goes out on each session of the tab, or
+    /// on its own frame session, with cookies stripped. Empty: drop it.
+    pub fn from_page(&mut self, tab: &str, bytes: &[u8]) -> Vec<String> {
+        self.page_message(tab, bytes).unwrap_or_default()
+    }
+
+    fn page_message(&mut self, tab: &str, bytes: &[u8]) -> Option<Vec<String>> {
         let Ok(Value::Object(mut msg)) = serde_json::from_slice::<Value>(bytes) else { return None };
         if let Some(id) = msg.get("id").and_then(Value::as_i64) {
-            let agent = self.pending.remove(&id)?;
-            msg.insert("id".into(), agent);
-            return Some(Value::Object(msg).to_string());
+            let p = self.pending.remove(&id)?;
+            msg.insert("id".into(), p.agent);
+            match p.session {
+                Some(s) => msg.insert("sessionId".into(), json!(s)),
+                None => msg.remove("sessionId"),
+            };
+            return Some(vec![Value::Object(msg).to_string()]);
         }
         let method = msg.get("method").and_then(Value::as_str)?.to_owned();
-        if let Some(s) = msg.get("sessionId").and_then(Value::as_str).filter(|s| !s.is_empty())
-            && !self.children.contains_key(s)
+        let frame = msg.get("sessionId").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+        if let Some(s) = &frame
+            && !self.children.get(s).is_some_and(|(owner, _)| owner == tab)
         {
             return None;
         }
@@ -480,7 +869,7 @@ impl Link {
                 let p = params?;
                 let session = p.get("sessionId").and_then(Value::as_str)?.to_owned();
                 let target = p.get("targetInfo").and_then(|t| t.get("targetId")).and_then(Value::as_str).unwrap_or_default().to_owned();
-                self.children.insert(session, target);
+                self.children.insert(session, (tab.to_owned(), target));
             }
             "Target.detachedFromTarget" => {
                 let session = params?.get("sessionId").and_then(Value::as_str)?.to_owned();
@@ -489,7 +878,7 @@ impl Link {
             "Target.targetInfoChanged" | "Target.targetCreated" | "Target.targetDestroyed" | "Target.targetCrashed" => {
                 let p = params?;
                 let target = p.get("targetInfo").and_then(|t| t.get("targetId")).or_else(|| p.get("targetId")).and_then(Value::as_str)?;
-                if !self.children.values().any(|c| c == target) {
+                if !self.children.values().any(|(owner, t)| owner == tab && t == target) {
                     return None;
                 }
             }
@@ -501,13 +890,55 @@ impl Link {
             }
             _ => {}
         }
-        // The page's own events carry no sessionId. agent-browser's direct
-        // page path names this page's session "" and drops events whose
-        // sessionId differs (so console, errors and reload's load wait saw
-        // nothing): tag them with "".
-        msg.entry("sessionId").or_insert_with(|| json!(""));
-        Some(Value::Object(msg).to_string())
+        if frame.is_some() {
+            return Some(vec![Value::Object(msg).to_string()]);
+        }
+        // A tab's own events carry no session: each session on it hears them.
+        let heard: Vec<String> = self.sessions.iter().filter(|(_, t)| *t == tab).map(|(s, _)| s.clone()).collect();
+        Some(
+            heard
+                .into_iter()
+                .map(|s| {
+                    let mut m = msg.clone();
+                    m.insert("sessionId".into(), json!(s));
+                    Value::Object(m).to_string()
+                })
+                .collect(),
+        )
     }
+}
+
+/// The request being answered: its id, and the session it came on.
+struct Asked<'a> {
+    id: &'a Value,
+    session: Option<&'a str>,
+}
+
+impl Asked<'_> {
+    fn answer(&self, result: Value) -> String {
+        answer_to(self.id, self.session, result)
+    }
+
+    fn error(&self, code: i64, message: &str) -> String {
+        error(self.id, self.session, code, message)
+    }
+}
+
+fn answer_to(id: &Value, session: Option<&str>, result: Value) -> String {
+    let mut out = json!({ "id": id, "result": result });
+    if let Some(s) = session {
+        out["sessionId"] = json!(s);
+    }
+    out.to_string()
+}
+
+/// An event, on `session` (None: the browser's own).
+fn event(method: &str, params: Value, session: Option<&str>) -> String {
+    let mut out = json!({ "method": method, "params": params });
+    if let Some(s) = session {
+        out["sessionId"] = json!(s);
+    }
+    out.to_string()
 }
 
 /// Network events carry `Cookie`/`Set-Cookie` values, HttpOnly ones
@@ -625,7 +1056,7 @@ pub fn respond(request: &Value, env: &dyn Fn(&str) -> Option<String>, attach: im
             let browser = env("HERDR_BROWSER").filter(|b| !b.is_empty());
             match attach(json!({ "terminal": terminal, "session": session, "browser": browser })) {
                 Ok(r) => json!({ "protocol": PROTOCOL, "success": true, "browser": {
-                    "cdpUrl": r["cdpUrl"], "directPage": true,
+                    "cdpUrl": r["cdpUrl"], "directPage": false,
                     "metadata": { "space": r["space"], "browser": r["browser"], "pane": r["pane"], "selection": r["selection"] } } }),
                 Err(e) => fail(e),
             }
@@ -901,43 +1332,86 @@ mod tests {
         }
     }
 
-    // ---- the method allowlist (review § 2, items 3 and 4)
+    // ---- the method allowlist and the Target domain, from a pane's tabs
 
     const PAGE: &str = "http://127.0.0.1:8765/browser-fixture.html";
 
+    fn tab(id: &str, url: &str, title: &str, ready: bool) -> TabInfo {
+        TabInfo { id: id.into(), url: url.into(), title: title.into(), ready }
+    }
+
+    /// Three tabs, the second one shown, the third never opened.
+    fn pane() -> Pane {
+        Pane {
+            tabs: vec![tab("b1:1", PAGE, "One", true), tab("b1:2", "https://example.com/", "Two", true), tab("b1:3", "", "", false)],
+            shown: "b1:2".into(),
+        }
+    }
+
+    fn none(_: &str) -> Option<String> {
+        None
+    }
+
     fn send(link: &mut Link, next: &mut i64, msg: Value) -> FromAgent {
-        link.from_agent(&msg.to_string(), next, PAGE)
+        link.from_agent(&msg.to_string(), next, &none)
+    }
+
+    fn texts(r: FromAgent) -> Vec<Value> {
+        let FromAgent::Reply(out) = r else { panic!("not a direct reply: {r:?}") };
+        out.iter().map(|t| serde_json::from_str(t).unwrap()).collect()
     }
 
     fn refused(r: &FromAgent) -> Option<String> {
         match r {
-            FromAgent::Reply(text) => serde_json::from_str::<Value>(text).ok()?["error"]["message"].as_str().map(str::to_owned),
-            FromAgent::Forward { .. } => None,
+            FromAgent::Reply(out) => serde_json::from_str::<Value>(out.last()?).ok()?["error"]["message"].as_str().map(str::to_owned),
+            _ => None,
         }
     }
 
+    fn link() -> Link {
+        Link::new(pane())
+    }
+
+    /// Attaches `tab` (which must be ready) and returns the session id.
+    fn attach(link: &mut Link, tab: &str) -> String {
+        let mut next = 0;
+        let out = texts(send(link, &mut next, json!({ "id": 1, "method": "Target.attachToTarget", "params": { "targetId": tab, "flatten": true } })));
+        out.last().unwrap()["result"]["sessionId"].as_str().unwrap().to_owned()
+    }
+
+    fn page_event(link: &mut Link, tab: &str, ev: Value) -> Vec<Value> {
+        link.from_page(tab, ev.to_string().as_bytes()).iter().map(|t| serde_json::from_str(t).unwrap()).collect()
+    }
+
     #[test]
-    fn what_agent_browser_sends_is_forwarded() {
-        let mut link = Link::default();
+    fn what_agent_browser_sends_is_forwarded_to_the_tab_of_its_session() {
+        let mut link = link();
+        let session = attach(&mut link, "b1:1");
         let mut next = 0;
         for method in [
             "Page.enable", "Runtime.enable", "Runtime.runIfWaitingForDebugger", "Network.enable", "WebMCP.enable",
             "Accessibility.getFullAXTree", "DOM.getDocument", "DOM.resolveNode", "DOM.getBoxModel", "Runtime.evaluate",
             "Runtime.callFunctionOn", "Page.getFrameTree", "Page.captureScreenshot", "Page.createIsolatedWorld",
             "Input.dispatchMouseEvent", "Input.insertText", "Emulation.setDeviceMetricsOverride", "Browser.getVersion",
-            "Target.getTargetInfo",
         ] {
-            let r = send(&mut link, &mut next, json!({ "id": 1, "method": method, "params": {} }));
-            assert!(matches!(r, FromAgent::Forward { .. }), "{method} was refused: {:?}", refused(&r));
+            let r = send(&mut link, &mut next, json!({ "id": 1, "method": method, "params": {}, "sessionId": session }));
+            let FromAgent::Forward { tab, message, .. } = r else { panic!("{method} was refused: {:?}", refused(&r)) };
+            assert_eq!(tab, "b1:1");
+            // The tab's page never hears Herdr's session id.
+            assert!(serde_json::from_str::<Value>(&message).unwrap().get("sessionId").is_none(), "{method}");
         }
+        // At the root, Browser.getVersion goes to the shown tab.
+        let FromAgent::Forward { tab, .. } = send(&mut link, &mut next, json!({ "id": 2, "method": "Browser.getVersion" })) else { panic!() };
+        assert_eq!(tab, "b1:2");
     }
 
     #[test]
     fn everything_unlisted_is_refused_with_herdrs_error() {
-        let mut link = Link::default();
+        let mut link = link();
+        let session = attach(&mut link, "b1:1");
         let mut next = 0;
         for method in [
-            "Target.attachToBrowserTarget", "Target.attachToTarget", "Target.createTarget", "Target.getTargets", "Target.setDiscoverTargets",
+            "Target.attachToBrowserTarget", "Target.createBrowserContext", "Target.disposeBrowserContext", "Target.exposeDevToolsProtocol",
             "Browser.setDownloadBehavior", "Browser.grantPermissions", "Browser.close", "Network.getCookies", "Network.getAllCookies",
             "Storage.getCookies", "Network.setCookie", "DOM.setFileInputFiles", "DOM.getFileInfo", "Input.dispatchDragEvent",
             "Page.addScriptToEvaluateOnNewDocument", "Page.setDownloadBehavior", "Runtime.addBinding", "Fetch.enable",
@@ -945,151 +1419,378 @@ mod tests {
             "Tracing.start", "Tethering.bind", "Security.setIgnoreCertificateErrors", "Debugger.enable", "IO.read", "Nope.nothing", "Page",
             "Runtime.addBinding ", "Runtime.evaluate\nFORGED x", "Runtime.", ".evaluate", "Runtime.evaluate.x", "Accessibility.enable\u{0}",
         ] {
-            let r = send(&mut link, &mut next, json!({ "id": 7, "method": method }));
-            assert_eq!(refused(&r), Some(format!("herdr: {method} is not allowed for agents")), "{method}");
-            let FromAgent::Reply(text) = r else { unreachable!() };
-            let reply: Value = serde_json::from_str(&text).unwrap();
-            assert_eq!(reply["id"], 7);
-            assert_eq!(reply["error"]["code"], -32601);
+            for session in [Some(session.as_str()), None] {
+                let mut msg = json!({ "id": 7, "method": method });
+                if let Some(s) = session {
+                    msg["sessionId"] = json!(s);
+                }
+                let r = send(&mut link, &mut next, msg);
+                assert_eq!(refused(&r), Some(format!("herdr: {method} is not allowed for agents")), "{method}");
+                let reply = &texts(r)[0];
+                assert_eq!(reply["id"], 7);
+                assert_eq!(reply["error"]["code"], -32601);
+                assert_eq!(reply.get("sessionId").and_then(Value::as_str), session);
+            }
         }
     }
 
     #[test]
-    fn checked_params_page_navigate_print_and_key_commands() {
-        let mut link = Link::default();
+    fn a_message_at_the_root_needs_a_session_and_an_unknown_session_is_refused() {
+        let mut link = link();
         let mut next = 0;
+        let r = send(&mut link, &mut next, json!({ "id": 1, "method": "Runtime.evaluate", "params": { "expression": "1" } }));
+        assert!(refused(&r).unwrap().starts_with("herdr: Runtime.evaluate needs a session"));
+        let r = send(&mut link, &mut next, json!({ "id": 2, "method": "Runtime.evaluate", "sessionId": "S9" }));
+        assert_eq!(refused(&r), Some("herdr: unknown session S9".to_owned()));
+        // A session from another connection (or a stale one) is just as unknown.
+        let mut other = Link::new(pane());
+        let theirs = attach(&mut other, "b1:1");
+        let r = send(&mut link, &mut next, json!({ "id": 3, "method": "Page.enable", "sessionId": theirs }));
+        assert_eq!(refused(&r), Some(format!("herdr: unknown session {theirs}")));
+        assert!(link.pending.is_empty());
+    }
+
+    #[test]
+    fn discovery_lists_the_panes_tabs_shown_first_and_announces_them() {
+        let mut link = link();
+        let mut next = 0;
+        let out = texts(send(&mut link, &mut next, json!({ "id": 1, "method": "Target.getTargets" })));
+        let ids: Vec<&str> = out[0]["result"]["targetInfos"].as_array().unwrap().iter().map(|t| t["targetId"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["b1:2", "b1:1", "b1:3"]);
+        let one = &out[0]["result"]["targetInfos"][1];
+        assert_eq!((one["type"].as_str(), one["title"].as_str(), one["url"].as_str()), (Some("page"), Some("One"), Some(PAGE)));
+        // Discovery on: a targetCreated per tab, then the answer.
+        let out = texts(send(&mut link, &mut next, json!({ "id": 2, "method": "Target.setDiscoverTargets", "params": { "discover": true } })));
+        assert_eq!(out.len(), 4);
+        assert!(out[..3].iter().all(|e| e["method"] == "Target.targetCreated"));
+        assert_eq!(out[0]["params"]["targetInfo"]["targetId"], "b1:1");
+        assert_eq!(out[3], json!({ "id": 2, "result": {} }));
+        // getTargetInfo of a tab.
+        let out = texts(send(&mut link, &mut next, json!({ "id": 3, "method": "Target.getTargetInfo", "params": { "targetId": "b1:2" } })));
+        assert_eq!(out[0]["result"]["targetInfo"]["title"], "Two");
+    }
+
+    #[test]
+    fn a_target_of_another_pane_is_never_known() {
+        let mut link = link();
+        let mut next = 0;
+        let session = attach(&mut link, "b1:1");
+        for (method, params) in [
+            ("Target.attachToTarget", json!({ "targetId": "b2:1", "flatten": true })),
+            ("Target.closeTarget", json!({ "targetId": "b2:1" })),
+            ("Target.activateTarget", json!({ "targetId": "b2:1" })),
+            ("Target.getTargetInfo", json!({ "targetId": "b2:1" })),
+            ("Target.getTargetInfo", json!({})),
+            ("Target.closeTarget", json!({})),
+        ] {
+            let r = send(&mut link, &mut next, json!({ "id": 1, "method": method, "params": params }));
+            assert!(refused(&r).unwrap().contains("is not a tab of this browser"), "{method} {params}: {:?}", refused(&r));
+        }
+        // A frame's targetId that no tab session reported is refused inside a session too.
+        let r = send(&mut link, &mut next, json!({ "id": 2, "method": "Target.getTargetInfo", "params": { "targetId": "b2:1" }, "sessionId": session }));
+        assert!(refused(&r).is_some());
+        assert!(link.waiting.is_empty() && link.pending.is_empty());
+    }
+
+    #[test]
+    fn attaching_gives_a_synthetic_flat_session_and_events_carry_it_back() {
+        let mut link = link();
+        let mut next = 0;
+        let r = send(&mut link, &mut next, json!({ "id": 1, "method": "Target.attachToTarget", "params": { "targetId": "b1:1" } }));
+        assert_eq!(refused(&r), Some("herdr: only flat sessions: attachToTarget needs flatten: true".to_owned()));
+        let out = texts(send(&mut link, &mut next, json!({ "id": 2, "method": "Target.attachToTarget", "params": { "targetId": "b1:1", "flatten": true } })));
+        assert_eq!(out[0]["method"], "Target.attachedToTarget");
+        assert_eq!(out[0]["params"]["targetInfo"]["targetId"], "b1:1");
+        let session = out[1]["result"]["sessionId"].as_str().unwrap().to_owned();
+        assert_eq!(out[0]["params"]["sessionId"], session.as_str());
+        assert_eq!(out[1]["id"], 2);
+        // Another session on the same tab is a different id; both hear its events.
+        let second = attach(&mut link, "b1:1");
+        assert_ne!(second, session);
+        let heard = page_event(&mut link, "b1:1", json!({ "method": "Runtime.consoleAPICalled", "params": { "type": "log" } }));
+        let mut sessions: Vec<&str> = heard.iter().map(|e| e["sessionId"].as_str().unwrap()).collect();
+        sessions.sort();
+        let mut want = vec![session.as_str(), second.as_str()];
+        want.sort();
+        assert_eq!(sessions, want);
+        // A tab nobody attached drops its events; so does a tab of another pane.
+        assert!(page_event(&mut link, "b1:2", json!({ "method": "Page.loadEventFired", "params": {} })).is_empty());
+        // Answers go back under the agent's id and session, matched by the proxy's id.
+        let FromAgent::Forward { id, tab, .. } = send(&mut link, &mut next, json!({ "id": 7, "method": "Page.reload", "sessionId": session })) else { panic!() };
+        assert_eq!(tab, "b1:1");
+        let back = page_event(&mut link, "b1:1", json!({ "id": id, "result": {} }));
+        assert_eq!(back, [json!({ "id": 7, "result": {}, "sessionId": session })]);
+        assert!(page_event(&mut link, "b1:1", json!({ "id": id, "result": {} })).is_empty(), "an answer nobody asked for is dropped");
+        // detachFromTarget ends one session only.
+        let out = texts(send(&mut link, &mut next, json!({ "id": 8, "method": "Target.detachFromTarget", "params": { "sessionId": second } })));
+        assert_eq!(out[0]["method"], "Target.detachedFromTarget");
+        assert_eq!(out[0]["params"]["sessionId"], second.as_str());
+        let r = send(&mut link, &mut next, json!({ "id": 9, "method": "Page.enable", "sessionId": second }));
+        assert!(refused(&r).unwrap().starts_with("herdr: unknown session"));
+        assert_eq!(page_event(&mut link, "b1:1", json!({ "method": "Page.loadEventFired", "params": {} })).len(), 1);
+    }
+
+    #[test]
+    fn attaching_a_tab_that_was_never_opened_waits_for_its_page() {
+        let mut link = link();
+        let mut next = 0;
+        let FromAgent::Tab(op) = send(&mut link, &mut next, json!({ "id": 1, "method": "Target.attachToTarget", "params": { "targetId": "b1:3", "flatten": true } })) else { panic!() };
+        assert_eq!(op.action, TabAction::Open { tab: "b1:3".into() });
+        assert!(link.done(op.ticket, Ok("b1:3".into())).is_empty(), "the page doesn't exist yet");
+        let mut now = pane();
+        now.tabs[2].ready = true;
+        let out: Vec<Value> = link.sync(now).iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1]["id"], 1);
+        assert!(out[1]["result"]["sessionId"].is_string());
+        // The window couldn't: the agent hears why.
+        let FromAgent::Tab(op) = send(&mut link, &mut next, json!({ "id": 2, "method": "Target.activateTarget", "params": { "targetId": "b1:1" } })) else { panic!() };
+        let out: Vec<Value> = link.done(op.ticket, Err("no".into())).iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        assert_eq!(out, [json!({ "id": 2, "error": { "code": -32000, "message": "no" } })]);
+    }
+
+    #[test]
+    fn create_activate_and_close_go_to_the_window_and_answer_when_it_has_acted() {
+        let mut link = link();
+        let mut next = 0;
+        // createTarget: the url gate applies, no url is about:blank.
         for url in ["file:///etc/hosts", "chrome://version", "javascript:alert(1)", "data:text/html,x"] {
-            let r = send(&mut link, &mut next, json!({ "id": 1, "method": "Page.navigate", "params": { "url": url } }));
+            let r = send(&mut link, &mut next, json!({ "id": 1, "method": "Target.createTarget", "params": { "url": url } }));
             assert_eq!(refused(&r), Some(format!("herdr: only http, https and about:blank pages open, not {url}")));
         }
-        let r = send(&mut link, &mut next, json!({ "id": 1, "method": "Page.navigate", "params": { "url": "https://example.com/" } }));
+        let FromAgent::Tab(op) = send(&mut link, &mut next, json!({ "id": 2, "method": "Target.createTarget", "params": { "url": "https://example.com/x" } })) else { panic!() };
+        assert_eq!(op.action, TabAction::New { url: "https://example.com/x".into() });
+        let FromAgent::Tab(blank) = send(&mut link, &mut next, json!({ "id": 3, "method": "Target.createTarget", "params": {} })) else { panic!() };
+        assert_eq!(blank.action, TabAction::New { url: "about:blank".into() });
+        assert_ne!(op.ticket, blank.ticket);
+        // The new tab exists in the pane; the answer comes with its page.
+        assert!(link.done(op.ticket, Ok("b1:4".into())).is_empty());
+        let mut now = pane();
+        now.tabs.push(tab("b1:4", "https://example.com/x", "", false));
+        assert!(link.sync(now.clone()).is_empty());
+        now.tabs[3].ready = true;
+        let out: Vec<Value> = link.sync(now).iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        assert_eq!(out, [json!({ "id": 2, "result": { "targetId": "b1:4" } })]);
+        // activateTarget and Page.bringToFront select; closeTarget closes.
+        let FromAgent::Tab(op) = send(&mut link, &mut next, json!({ "id": 4, "method": "Target.activateTarget", "params": { "targetId": "b1:1" } })) else { panic!() };
+        assert_eq!(op.action, TabAction::Select { tab: "b1:1".into() });
+        assert_eq!(link.done(op.ticket, Ok("b1:1".into())), [json!({ "id": 4, "result": {} }).to_string()]);
+        let session = attach(&mut link, "b1:2");
+        let FromAgent::Tab(op) = send(&mut link, &mut next, json!({ "id": 5, "method": "Page.bringToFront", "sessionId": session })) else { panic!() };
+        assert_eq!(op.action, TabAction::Select { tab: "b1:2".into() });
+        let out: Vec<Value> = link.done(op.ticket, Ok("b1:2".into())).iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        assert_eq!(out, [json!({ "id": 5, "result": {}, "sessionId": session })]);
+        let FromAgent::Tab(op) = send(&mut link, &mut next, json!({ "id": 6, "method": "Target.closeTarget", "params": { "targetId": "b1:2" } })) else { panic!() };
+        assert_eq!(op.action, TabAction::Close { tab: "b1:2".into() });
+        // The window drops the tab first, then answers: closing the tab doesn't fail its own closeTarget.
+        let mut gone = pane();
+        gone.tabs.remove(1);
+        link.sync(gone);
+        assert_eq!(link.done(op.ticket, Ok("b1:2".into())), [json!({ "id": 6, "result": { "success": true } }).to_string()]);
+    }
+
+    #[test]
+    fn tab_changes_from_any_source_are_announced_once_discovery_is_on() {
+        let mut link = link();
+        let mut next = 0;
+        let session = attach(&mut link, "b1:1");
+        // Discovery off: tab changes are silent, a closed tab's sessions still end.
+        let mut now = pane();
+        now.tabs.push(tab("b1:4", "https://a.example/", "", false));
+        assert!(link.sync(now.clone()).is_empty());
+        send(&mut link, &mut next, json!({ "id": 1, "method": "Target.setDiscoverTargets", "params": { "discover": true } }));
+        // A tab opened (a popup, the person), a url and title that changed, a tab closed.
+        now.tabs.push(tab("b1:5", "https://popup.example/", "", true));
+        now.tabs[0].title = "One, renamed".into();
+        now.tabs[1].url = "https://example.com/next".into();
+        now.tabs.remove(2);
+        let out: Vec<Value> = link.sync(now.clone()).iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        let kinds: Vec<(&str, &str)> = out.iter().map(|e| (e["method"].as_str().unwrap(), e["params"]["targetInfo"]["targetId"].as_str().or(e["params"]["targetId"].as_str()).unwrap())).collect();
+        assert_eq!(
+            kinds,
+            [("Target.targetDestroyed", "b1:3"), ("Target.targetInfoChanged", "b1:1"), ("Target.targetInfoChanged", "b1:2"), ("Target.targetCreated", "b1:5")]
+        );
+        assert_eq!(out[1]["params"]["targetInfo"]["title"], "One, renamed");
+        // Nothing changed: nothing said.
+        assert!(link.sync(now.clone()).is_empty());
+        // The attached tab closes: its session detaches, then the target is destroyed.
+        now.tabs.remove(0);
+        let out: Vec<Value> = link.sync(now).iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        assert_eq!(out[0]["method"], "Target.detachedFromTarget");
+        assert_eq!(out[0]["params"], json!({ "sessionId": session, "targetId": "b1:1" }));
+        assert_eq!(out[1]["method"], "Target.targetDestroyed");
+        let r = send(&mut link, &mut next, json!({ "id": 2, "method": "Page.enable", "sessionId": session }));
+        assert!(refused(&r).unwrap().starts_with("herdr: unknown session"));
+    }
+
+    #[test]
+    fn a_request_to_a_tab_that_closes_fails_instead_of_hanging() {
+        let mut link = link();
+        let mut next = 0;
+        let session = attach(&mut link, "b1:1");
+        send(&mut link, &mut next, json!({ "id": 5, "method": "Runtime.evaluate", "sessionId": session }));
+        let mut gone = pane();
+        gone.tabs.remove(0);
+        let out: Vec<Value> = link.sync(gone).iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        assert!(out.iter().any(|e| e["id"] == 5 && e["error"]["message"] == "herdr: the tab closed" && e["sessionId"] == session.as_str()), "{out:?}");
+        assert!(link.pending.is_empty());
+    }
+
+    #[test]
+    fn browser_level_auto_attach_is_refused_not_acknowledged() {
+        let mut link = link();
+        let mut next = 0;
+        let r = send(&mut link, &mut next, json!({ "id": 1, "method": "Target.setAutoAttach", "params": { "autoAttach": true, "flatten": true } }));
+        let message = refused(&r).unwrap();
+        assert!(message.starts_with("herdr: browser-level Target.setAutoAttach is not supported"), "{message}");
+        assert!(link.pending.is_empty());
+    }
+
+    #[test]
+    fn child_sessions_route_to_their_tab_and_only_from_its_auto_attach() {
+        let mut link = link();
+        let mut next = 0;
+        let s1 = attach(&mut link, "b1:1");
+        let s2 = attach(&mut link, "b1:2");
+        // A page-level setAutoAttach goes to the tab with flatten forced on.
+        let FromAgent::Forward { message, tab, .. } = send(
+            &mut link,
+            &mut next,
+            json!({ "id": 1, "method": "Target.setAutoAttach", "sessionId": s1, "params": { "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": false } }),
+        ) else {
+            panic!()
+        };
+        assert_eq!(tab, "b1:1");
+        let sent: Value = serde_json::from_str(&message).unwrap();
+        assert_eq!((&sent["params"]["flatten"], sent.get("sessionId")), (&json!(true), None));
+        // Not known yet: refused.
+        let r = send(&mut link, &mut next, json!({ "id": 2, "method": "Runtime.evaluate", "sessionId": "C1" }));
+        assert_eq!(refused(&r), Some("herdr: unknown session C1".to_owned()));
+        // The tab's page auto-attached a frame: the event reaches the agent on the tab's session, ids intact.
+        let ev = json!({ "method": "Target.attachedToTarget", "params": { "sessionId": "C1", "targetInfo": { "targetId": "F1", "type": "iframe" }, "waitingForDebugger": false } });
+        let heard = page_event(&mut link, "b1:1", ev.clone());
+        assert_eq!(heard.len(), 1);
+        assert_eq!((heard[0]["sessionId"].as_str(), heard[0]["params"]["sessionId"].as_str()), (Some(s1.as_str()), Some("C1")));
+        // C1 now routes to b1:1, and keeps its own session id toward CEF.
+        let FromAgent::Forward { tab, message, .. } = send(&mut link, &mut next, json!({ "id": 3, "method": "Runtime.evaluate", "sessionId": "C1" })) else { panic!() };
+        assert_eq!(tab, "b1:1");
+        assert_eq!(serde_json::from_str::<Value>(&message).unwrap()["sessionId"], "C1");
+        // The answer returns under C1; events of C1 pass through untouched.
+        let FromAgent::Forward { id, .. } = send(&mut link, &mut next, json!({ "id": 4, "method": "Page.enable", "sessionId": "C1" })) else { panic!() };
+        assert_eq!(page_event(&mut link, "b1:1", json!({ "id": id, "result": {}, "sessionId": "C1" })), [json!({ "id": 4, "result": {}, "sessionId": "C1" })]);
+        let ev = json!({ "method": "Runtime.consoleAPICalled", "sessionId": "C1", "params": {} });
+        assert_eq!(page_event(&mut link, "b1:1", ev.clone()), [ev.clone()]);
+        // Another tab can't speak on C1, and a session nobody attached is dropped.
+        assert!(page_event(&mut link, "b1:2", ev).is_empty());
+        assert!(page_event(&mut link, "b1:1", json!({ "method": "Runtime.consoleAPICalled", "sessionId": "C9", "params": {} })).is_empty());
+        // The allowlist applies inside child sessions.
+        let r = send(&mut link, &mut next, json!({ "id": 5, "method": "Target.attachToBrowserTarget", "sessionId": "C1" }));
+        assert!(refused(&r).is_some());
+        // detachFromTarget of a frame: own children only.
+        let r = send(&mut link, &mut next, json!({ "id": 6, "method": "Target.detachFromTarget", "params": { "sessionId": "C9" } }));
+        assert!(refused(&r).is_some());
+        assert!(matches!(send(&mut link, &mut next, json!({ "id": 7, "method": "Target.detachFromTarget", "params": { "sessionId": "C1" } })), FromAgent::Forward { .. }));
+        // getTargetInfo of a frame goes to its tab; of anything else it's refused.
+        let r = send(&mut link, &mut next, json!({ "id": 8, "method": "Target.getTargetInfo", "params": { "targetId": "OTHER" }, "sessionId": s1 }));
+        assert!(refused(&r).is_some());
+        assert!(matches!(send(&mut link, &mut next, json!({ "id": 9, "method": "Target.getTargetInfo", "params": { "targetId": "F1" }, "sessionId": s1 })), FromAgent::Forward { .. }));
+        // Target events about other targets than this tab's frames are dropped.
+        let ev = json!({ "method": "Target.targetCreated", "params": { "targetInfo": { "targetId": "T7" } } });
+        assert!(page_event(&mut link, "b1:1", ev).is_empty());
+        let ev = json!({ "method": "Target.targetInfoChanged", "params": { "targetInfo": { "targetId": "F1", "url": "https://frame/" } } });
+        assert_eq!(page_event(&mut link, "b1:1", ev).len(), 1);
+        // The frame detaches: the session is gone.
+        let ev = json!({ "method": "Target.detachedFromTarget", "params": { "sessionId": "C1", "targetId": "F1" } });
+        assert_eq!(page_event(&mut link, "b1:1", ev).len(), 1);
+        let r = send(&mut link, &mut next, json!({ "id": 10, "method": "Runtime.evaluate", "sessionId": "C1" }));
+        assert!(refused(&r).is_some());
+        // Ending a tab's last session takes its frames along, announced on the tab's session.
+        page_event(&mut link, "b1:2", json!({ "method": "Target.attachedToTarget", "params": { "sessionId": "C2", "targetInfo": { "targetId": "F2" } } }));
+        let out = texts(send(&mut link, &mut next, json!({ "id": 11, "method": "Target.detachFromTarget", "params": { "sessionId": s2 } })));
+        assert_eq!((out[0]["params"]["sessionId"].as_str(), out[0]["sessionId"].as_str()), (Some("C2"), Some(s2.as_str())));
+        assert_eq!(out[1]["params"]["sessionId"], s2.as_str());
+    }
+
+    #[test]
+    fn checked_params_page_navigate_print_and_key_commands() {
+        let mut link = link();
+        let session = attach(&mut link, "b1:1");
+        let mut next = 0;
+        for url in ["file:///etc/hosts", "chrome://version", "javascript:alert(1)", "data:text/html,x"] {
+            let r = send(&mut link, &mut next, json!({ "id": 1, "method": "Page.navigate", "params": { "url": url }, "sessionId": session }));
+            assert_eq!(refused(&r), Some(format!("herdr: only http, https and about:blank pages open, not {url}")));
+        }
+        let r = send(&mut link, &mut next, json!({ "id": 1, "method": "Page.navigate", "params": { "url": "https://example.com/" }, "sessionId": session }));
         assert!(matches!(r, FromAgent::Forward { .. }));
-        let r = send(&mut link, &mut next, json!({ "id": 2, "method": "Page.printToPDF", "params": { "transferMode": "ReturnAsStream" } }));
+        let r = send(&mut link, &mut next, json!({ "id": 2, "method": "Page.printToPDF", "params": { "transferMode": "ReturnAsStream" }, "sessionId": session }));
         assert!(refused(&r).is_some());
-        let r = send(&mut link, &mut next, json!({ "id": 3, "method": "Input.dispatchKeyEvent", "params": { "type": "keyDown", "commands": ["paste"] } }));
+        let r = send(&mut link, &mut next, json!({ "id": 3, "method": "Input.dispatchKeyEvent", "params": { "type": "keyDown", "commands": ["paste"] }, "sessionId": session }));
         assert!(refused(&r).is_some());
-        let r = send(&mut link, &mut next, json!({ "id": 4, "method": "Input.dispatchKeyEvent", "params": { "type": "keyDown", "commands": [] } }));
+        let r = send(&mut link, &mut next, json!({ "id": 4, "method": "Input.dispatchKeyEvent", "params": { "type": "keyDown", "commands": [] }, "sessionId": session }));
         assert!(matches!(r, FromAgent::Forward { .. }));
     }
 
     #[test]
     fn a_page_outside_the_gate_takes_only_navigation() {
-        let mut link = Link::default();
+        let mut link = link();
+        let session = attach(&mut link, "b1:1");
         let mut next = 0;
-        let r = link.from_agent(&json!({ "id": 1, "method": "Runtime.evaluate", "params": { "expression": "1" } }).to_string(), &mut next, "file:///etc/hosts");
+        let url_of = |tab: &str| (tab == "b1:1").then(|| "file:///etc/hosts".to_owned());
+        let eval = json!({ "id": 1, "method": "Runtime.evaluate", "params": { "expression": "1" }, "sessionId": session }).to_string();
+        let r = link.from_agent(&eval, &mut next, &url_of);
         assert_eq!(refused(&r), Some("herdr: the page is at file:, not an http, https or about:blank page: navigate it first".to_owned()));
-        let r = link.from_agent(&json!({ "id": 2, "method": "Page.navigate", "params": { "url": "https://a/" } }).to_string(), &mut next, "chrome://version");
-        assert!(matches!(r, FromAgent::Forward { .. }));
+        let nav = json!({ "id": 2, "method": "Page.navigate", "params": { "url": "https://a/" }, "sessionId": session }).to_string();
+        assert!(matches!(link.from_agent(&nav, &mut next, &url_of), FromAgent::Forward { .. }));
+        // The gate is per tab: another tab at a fine page is not affected.
+        let other = attach(&mut link, "b1:2");
+        let eval = json!({ "id": 3, "method": "Runtime.evaluate", "sessionId": other }).to_string();
+        assert!(matches!(link.from_agent(&eval, &mut next, &url_of), FromAgent::Forward { .. }));
     }
 
     #[test]
-    fn request_ids_are_rewritten_and_answers_map_back() {
-        let mut link = Link::default();
+    fn request_ids_are_rewritten_and_in_flight_requests_are_capped() {
+        let mut link = link();
+        let session = attach(&mut link, "b1:1");
         let mut next = 100;
-        let FromAgent::Forward { id, message } = send(&mut link, &mut next, json!({ "id": 1, "method": "Page.enable" })) else { panic!() };
+        let FromAgent::Forward { id, message, .. } = send(&mut link, &mut next, json!({ "id": 1, "method": "Page.enable", "sessionId": session })) else { panic!() };
         assert_eq!(id, 101);
         assert_eq!(serde_json::from_str::<Value>(&message).unwrap()["id"], 101);
-        let back = link.from_page(json!({ "id": 101, "result": {} }).to_string().as_bytes()).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&back).unwrap(), json!({ "id": 1, "result": {} }));
-        // An answer nobody here asked for is dropped.
-        assert_eq!(link.from_page(json!({ "id": 101, "result": {} }).to_string().as_bytes()), None);
-        assert_eq!(link.from_page(json!({ "id": 5, "result": {} }).to_string().as_bytes()), None);
-    }
-
-    #[test]
-    fn in_flight_requests_are_capped() {
-        let mut link = Link::default();
-        let mut next = 0;
-        for i in 0..MAX_IN_FLIGHT {
-            assert!(matches!(send(&mut link, &mut next, json!({ "id": i, "method": "Page.enable" })), FromAgent::Forward { .. }));
+        for i in 1..MAX_IN_FLIGHT {
+            assert!(matches!(send(&mut link, &mut next, json!({ "id": i, "method": "Page.enable", "sessionId": session })), FromAgent::Forward { .. }));
         }
-        let r = send(&mut link, &mut next, json!({ "id": 999, "method": "Page.enable" }));
+        let r = send(&mut link, &mut next, json!({ "id": 999, "method": "Page.enable", "sessionId": session }));
         assert_eq!(refused(&r), Some("herdr: too many requests in flight".to_owned()));
-    }
-
-    #[test]
-    fn child_sessions_only_from_this_connections_auto_attach() {
-        let mut link = Link::default();
-        let mut next = 0;
-        // setAutoAttach goes out with flatten forced on.
-        let FromAgent::Forward { message, .. } =
-            send(&mut link, &mut next, json!({ "id": 1, "method": "Target.setAutoAttach", "params": { "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": false } }))
-        else {
-            panic!()
-        };
-        assert_eq!(serde_json::from_str::<Value>(&message).unwrap()["params"]["flatten"], true);
-        // A message for a session nobody attached is refused.
-        let r = send(&mut link, &mut next, json!({ "id": 2, "method": "Runtime.evaluate", "sessionId": "S9" }));
-        assert_eq!(refused(&r), Some("herdr: unknown session S9".to_owned()));
-        // The page auto-attached a frame: that session becomes usable.
-        let ev = json!({ "method": "Target.attachedToTarget", "params": { "sessionId": "S1", "targetInfo": { "targetId": "T1", "type": "iframe" }, "waitingForDebugger": false } });
-        assert!(link.from_page(ev.to_string().as_bytes()).is_some());
-        let r = send(&mut link, &mut next, json!({ "id": 3, "method": "Runtime.evaluate", "sessionId": "S1" }));
-        assert!(matches!(r, FromAgent::Forward { .. }));
-        // The allowlist applies inside child sessions too.
-        let r = send(&mut link, &mut next, json!({ "id": 4, "method": "Target.attachToBrowserTarget", "sessionId": "S1" }));
-        assert!(refused(&r).is_some());
-        // detachFromTarget only for an own child.
-        let r = send(&mut link, &mut next, json!({ "id": 5, "method": "Target.detachFromTarget", "params": { "sessionId": "S9" } }));
-        assert!(refused(&r).is_some());
-        let r = send(&mut link, &mut next, json!({ "id": 6, "method": "Target.detachFromTarget", "params": { "sessionId": "S1" } }));
-        assert!(matches!(r, FromAgent::Forward { .. }));
-        // getTargetInfo on another target is refused; on an own child it goes.
-        let r = send(&mut link, &mut next, json!({ "id": 7, "method": "Target.getTargetInfo", "params": { "targetId": "OTHER" } }));
-        assert!(refused(&r).is_some());
-        let r = send(&mut link, &mut next, json!({ "id": 8, "method": "Target.getTargetInfo", "params": { "targetId": "T1" } }));
-        assert!(matches!(r, FromAgent::Forward { .. }));
-        // Events from sessions this connection never saw are dropped.
-        let ev = json!({ "method": "Runtime.consoleAPICalled", "sessionId": "S9", "params": {} });
-        assert_eq!(link.from_page(ev.to_string().as_bytes()), None);
-        let ev = json!({ "method": "Target.targetCreated", "params": { "targetInfo": { "targetId": "T7" } } });
-        assert_eq!(link.from_page(ev.to_string().as_bytes()), None);
-        // Detached: the session is gone.
-        let ev = json!({ "method": "Target.detachedFromTarget", "params": { "sessionId": "S1", "targetId": "T1" } });
-        assert!(link.from_page(ev.to_string().as_bytes()).is_some());
-        let r = send(&mut link, &mut next, json!({ "id": 9, "method": "Runtime.evaluate", "sessionId": "S1" }));
-        assert!(refused(&r).is_some());
-    }
-
-    /// agent-browser's direct-page session id is "": a page event without
-    /// that tag never reaches its console, errors or reload wait.
-    #[test]
-    fn page_events_carry_the_direct_page_session_id() {
-        let mut link = Link::default();
-        let out = |link: &mut Link, ev: Value| serde_json::from_str::<Value>(&link.from_page(ev.to_string().as_bytes()).unwrap()).unwrap();
-        for method in ["Runtime.consoleAPICalled", "Runtime.exceptionThrown", "Page.loadEventFired"] {
-            assert_eq!(out(&mut link, json!({ "method": method, "params": {} }))["sessionId"], "", "{method}");
-        }
-        // A child session keeps its own id.
-        link.from_page(json!({ "method": "Target.attachedToTarget", "params": { "sessionId": "S1", "targetInfo": { "targetId": "T1" } } }).to_string().as_bytes()).unwrap();
-        assert_eq!(out(&mut link, json!({ "method": "Runtime.consoleAPICalled", "sessionId": "S1", "params": {} }))["sessionId"], "S1");
-        // Answers are matched by id and stay untagged.
-        let mut next = 0;
-        let FromAgent::Forward { id, .. } = send(&mut link, &mut next, json!({ "id": 7, "method": "Page.reload" })) else { panic!() };
-        assert_eq!(out(&mut link, json!({ "id": id, "result": {} })), json!({ "id": 7, "result": {} }));
+        let r = send(&mut link, &mut next, json!({ "id": 999, "method": "Target.createTarget" }));
+        assert_eq!(refused(&r), Some("herdr: too many requests in flight".to_owned()));
+        // A forward the page never got fails under the agent's id.
+        let failed = link.fail(101, "gone").unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&failed).unwrap(), json!({ "id": 1, "sessionId": session, "error": { "code": -32000, "message": "gone" } }));
+        assert_eq!(link.fail(101, "gone"), None);
     }
 
     #[test]
     fn cookies_are_stripped_from_network_events() {
-        let mut link = Link::default();
-        let ev = json!({ "method": "Network.responseReceivedExtraInfo", "params": {
+        let mut link = link();
+        let session = attach(&mut link, "b1:1");
+        let mut one = |ev: Value| {
+            let out = page_event(&mut link, "b1:1", ev);
+            assert_eq!(out[0]["sessionId"], session.as_str());
+            out[0].clone()
+        };
+        let out = one(json!({ "method": "Network.responseReceivedExtraInfo", "params": {
             "requestId": "1", "headers": { "Set-Cookie": "sid=1", "content-type": "text/html" },
-            "headersText": "HTTP/1.1 200\r\nSet-Cookie: sid=1\r\n", "blockedCookies": [], "exemptedCookies": [] } });
-        let out: Value = serde_json::from_str(&link.from_page(ev.to_string().as_bytes()).unwrap()).unwrap();
+            "headersText": "HTTP/1.1 200\r\nSet-Cookie: sid=1\r\n", "blockedCookies": [], "exemptedCookies": [] } }));
         assert_eq!(out["params"]["headers"], json!({ "content-type": "text/html" }));
         assert!(out["params"].get("headersText").is_none());
         assert!(out["params"].get("blockedCookies").is_none());
         assert!(out["params"].get("exemptedCookies").is_none());
-        let ev = json!({ "method": "Network.requestWillBeSentExtraInfo", "params": {
-            "requestId": "1", "headers": { "cookie": "sid=1", "accept": "*/*" }, "associatedCookies": [{ "cookie": { "value": "1" } }] } });
-        let out: Value = serde_json::from_str(&link.from_page(ev.to_string().as_bytes()).unwrap()).unwrap();
+        let out = one(json!({ "method": "Network.requestWillBeSentExtraInfo", "params": {
+            "requestId": "1", "headers": { "cookie": "sid=1", "accept": "*/*" }, "associatedCookies": [{ "cookie": { "value": "1" } }] } }));
         assert_eq!(out["params"]["headers"], json!({ "accept": "*/*" }));
         assert!(out["params"].get("associatedCookies").is_none());
-        let ev = json!({ "method": "Network.requestWillBeSent", "params": { "request": { "url": "https://a/", "headers": { "Cookie": "sid=1" } } } });
-        let out: Value = serde_json::from_str(&link.from_page(ev.to_string().as_bytes()).unwrap()).unwrap();
+        let out = one(json!({ "method": "Network.requestWillBeSent", "params": { "request": { "url": "https://a/", "headers": { "Cookie": "sid=1" } } } }));
         assert_eq!(out["params"]["request"]["headers"], json!({}));
-        let ev = json!({ "method": "Network.responseReceived", "params": { "response": { "headers": { "set-cookie": "a=1", "x": "y" }, "requestHeaders": { "Cookie": "a" } } } });
-        let out: Value = serde_json::from_str(&link.from_page(ev.to_string().as_bytes()).unwrap()).unwrap();
+        let out = one(json!({ "method": "Network.responseReceived", "params": { "response": { "headers": { "set-cookie": "a=1", "x": "y" }, "requestHeaders": { "Cookie": "a" } } } }));
         assert_eq!(out["params"]["response"]["headers"], json!({ "x": "y" }));
         assert_eq!(out["params"]["response"]["requestHeaders"], json!({}));
     }
@@ -1098,28 +1799,27 @@ mod tests {
     /// page script can't read it, so the agent doesn't get it either.
     #[test]
     fn credential_headers_are_stripped_from_network_events() {
-        let mut link = Link::default();
-        let ev = json!({ "method": "Network.requestWillBeSentExtraInfo", "params": {
-            "requestId": "1", "headers": { "Authorization": "Basic YTpi", "proxy-authorization": "Basic Yzpk", "accept": "*/*" } } });
-        let out: Value = serde_json::from_str(&link.from_page(ev.to_string().as_bytes()).unwrap()).unwrap();
+        let mut link = link();
+        attach(&mut link, "b1:1");
+        let mut one = |ev: Value| page_event(&mut link, "b1:1", ev)[0].clone();
+        let out = one(json!({ "method": "Network.requestWillBeSentExtraInfo", "params": {
+            "requestId": "1", "headers": { "Authorization": "Basic YTpi", "proxy-authorization": "Basic Yzpk", "accept": "*/*" } } }));
         assert_eq!(out["params"]["headers"], json!({ "accept": "*/*" }));
-        let ev = json!({ "method": "Network.responseReceived", "params": { "response": {
-            "headers": { "www-authenticate": "Basic" }, "requestHeaders": { "AUTHORIZATION": "Bearer t", "x": "y" } } } });
-        let out: Value = serde_json::from_str(&link.from_page(ev.to_string().as_bytes()).unwrap()).unwrap();
+        let out = one(json!({ "method": "Network.responseReceived", "params": { "response": {
+            "headers": { "www-authenticate": "Basic" }, "requestHeaders": { "AUTHORIZATION": "Bearer t", "x": "y" } } } }));
         assert_eq!(out["params"]["response"]["requestHeaders"], json!({ "x": "y" }));
         assert_eq!(out["params"]["response"]["headers"], json!({ "www-authenticate": "Basic" }));
-        let ev = json!({ "method": "Network.requestWillBeSent", "params": { "request": { "url": "https://a/", "headers": { "Proxy-Authorization": "Basic e" } } } });
-        let out: Value = serde_json::from_str(&link.from_page(ev.to_string().as_bytes()).unwrap()).unwrap();
+        let out = one(json!({ "method": "Network.requestWillBeSent", "params": { "request": { "url": "https://a/", "headers": { "Proxy-Authorization": "Basic e" } } } }));
         assert_eq!(out["params"]["request"]["headers"], json!({}));
     }
 
     #[test]
     fn malformed_messages_get_an_error_not_a_forward() {
-        let mut link = Link::default();
+        let mut link = link();
         let mut next = 0;
-        assert!(refused(&link.from_agent("not json", &mut next, PAGE)).is_some());
-        assert!(refused(&link.from_agent("{\"id\":1}", &mut next, PAGE)).is_some());
-        assert!(refused(&link.from_agent("{\"method\":\"Page.enable\"}", &mut next, PAGE)).is_some());
+        assert!(refused(&link.from_agent("not json", &mut next, &none)).is_some());
+        assert!(refused(&link.from_agent("{\"id\":1}", &mut next, &none)).is_some());
+        assert!(refused(&link.from_agent("{\"method\":\"Page.enable\"}", &mut next, &none)).is_some());
     }
 
     /// `params` that isn't an object (or null) is an error answer, never a
@@ -1127,22 +1827,23 @@ mod tests {
     /// token stayed live and the page didn't reset.
     #[test]
     fn params_that_are_not_an_object_get_an_error_not_a_panic() {
-        for method in ["Target.setAutoAttach", "Page.navigate", "Input.dispatchKeyEvent", "Page.printToPDF", "Runtime.evaluate"] {
+        for method in ["Target.setAutoAttach", "Target.createTarget", "Target.attachToTarget", "Page.navigate", "Input.dispatchKeyEvent", "Page.printToPDF", "Runtime.evaluate"] {
             for params in [json!([]), json!("x"), json!(1), json!(true), json!([{ "flatten": false }])] {
-                let mut link = Link::default();
+                let mut link = link();
                 let mut next = 0;
                 let msg = json!({ "id": 7, "method": method, "params": params });
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| link.from_agent(&msg.to_string(), &mut next, PAGE)));
-                let Ok(FromAgent::Reply(text)) = r else { panic!("{method} with params {params} panicked or was forwarded") };
-                let out: Value = serde_json::from_str(&text).unwrap();
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| link.from_agent(&msg.to_string(), &mut next, &none)));
+                let Ok(FromAgent::Reply(out)) = r else { panic!("{method} with params {params} panicked or was forwarded") };
+                let out: Value = serde_json::from_str(&out[0]).unwrap();
                 assert_eq!(out, json!({ "id": 7, "error": { "code": -32602, "message": "herdr: params must be an object" } }));
-                assert!(link.pending.is_empty(), "nothing is in flight");
+                assert!(link.pending.is_empty() && link.waiting.is_empty(), "nothing is in flight");
             }
         }
-        // null means none: forwarded, and setAutoAttach still gets flatten.
-        let mut link = Link::default();
+        // null means none: forwarded, and a page's setAutoAttach still gets flatten.
+        let mut link = link();
+        let session = attach(&mut link, "b1:1");
         let mut next = 0;
-        let r = send(&mut link, &mut next, json!({ "id": 1, "method": "Target.setAutoAttach", "params": null }));
+        let r = send(&mut link, &mut next, json!({ "id": 1, "method": "Target.setAutoAttach", "params": null, "sessionId": session }));
         let FromAgent::Forward { message, .. } = r else { panic!("null params refused: {:?}", refused(&r)) };
         assert_eq!(serde_json::from_str::<Value>(&message).unwrap()["params"], json!({ "flatten": true }));
     }
@@ -1150,20 +1851,15 @@ mod tests {
     #[test]
     fn a_session_id_that_is_not_a_string_is_refused_not_forwarded() {
         for session in [json!(5), json!({}), json!(null), json!(["s1"]), json!(true)] {
-            let mut link = Link::default();
+            let mut link = link();
             let mut next = 0;
             let r = send(&mut link, &mut next, json!({ "id": 3, "method": "Runtime.evaluate", "params": {}, "sessionId": session }));
-            let FromAgent::Reply(text) = r else { panic!("sessionId {session} was forwarded") };
-            let out: Value = serde_json::from_str(&text).unwrap();
+            let FromAgent::Reply(out) = r else { panic!("sessionId {session} was forwarded") };
+            let out: Value = serde_json::from_str(&out[0]).unwrap();
             assert_eq!(out, json!({ "id": 3, "error": { "code": -32600, "message": "herdr: sessionId must be a string" } }));
             assert!(link.pending.is_empty(), "nothing is in flight");
         }
-        // Absent: the page's own session, forwarded.
-        let mut link = Link::default();
-        let mut next = 0;
-        assert!(matches!(send(&mut link, &mut next, json!({ "id": 4, "method": "Runtime.evaluate", "params": {} })), FromAgent::Forward { .. }));
     }
-
     // ---- the provider (agent-browser's plugin side)
 
     fn launch() -> Value {
@@ -1172,7 +1868,7 @@ mod tests {
     }
 
     #[test]
-    fn the_provider_answers_launch_with_a_direct_page_url() {
+    fn the_provider_answers_launch_with_a_browser_url() {
         let env = |k: &str| match k {
             "HC_TERMINAL_ID" => Some("t3".to_owned()),
             "AGENT_BROWSER_SESSION" => Some("herdr-abc".to_owned()),
@@ -1185,7 +1881,7 @@ mod tests {
         });
         assert_eq!(asked, json!({ "terminal": "t3", "session": "herdr-abc", "browser": null }));
         assert_eq!(out, json!({ "protocol": PROTOCOL, "success": true, "browser": {
-            "cdpUrl": "ws://127.0.0.1:4000/tok", "directPage": true,
+            "cdpUrl": "ws://127.0.0.1:4000/tok", "directPage": false,
             "metadata": { "space": "sp1", "browser": "b1", "pane": "p2", "selection": "tab" } } }));
     }
 

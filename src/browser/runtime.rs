@@ -332,6 +332,12 @@ pub fn send_devtools(id: &str, message: &[u8]) -> bool {
     host.send_dev_tools_message(Some(message)) == 1
 }
 
+/// An agent asked the window to change `browser`'s tabs (main thread, from
+/// the proxy's drain): the window runs it and answers through `proxy::tab_done`.
+pub fn tab_op(browser: &str, op: agent::TabOp) {
+    send(Event::Agent { browser: browser.to_owned(), op });
+}
+
 /// An agent's connection to `id` ended: the page reopens at its url in a
 /// new CEF browser, whose DevTools session starts clean. Whatever the
 /// agent set (overrides, headers, auto-attach) goes with the old one.
@@ -558,6 +564,7 @@ pub fn close(id: &str) {
         s.pages.remove(id);
         s.fits.remove(id);
     });
+    proxy::tab_gone(id);
     if let Some(b) = b {
         tracing::info!("browser: closing {id} (cef {})", b.identifier(), id = super::log_safe(id));
         STATE.with_borrow_mut(|s| s.closing.push(b.identifier()));
@@ -851,6 +858,7 @@ wrap_life_span_handler! {
                 close_browser(&browser);
             } else {
                 view::page_created(&self.id);
+                proxy::tab_ready(&self.id);
             }
         }
 
@@ -1135,7 +1143,7 @@ wrap_dev_tools_message_observer! {
         }
 
         fn on_dev_tools_agent_detached(&self, _browser: Option<&mut Browser>) {
-            if is_current(&self.id, self.generation) && proxy::revoke(&self.id) {
+            if is_current(&self.id, self.generation) && proxy::revoke(super::registry::browser_of(&self.id)) {
                 tracing::info!("browser: agent token for {} revoked: CEF's DevTools agent went away", super::log_safe(&self.id));
             }
         }

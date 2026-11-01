@@ -16,7 +16,8 @@
 //! `set_events`, `start`, `open`, `close`, `navigate`, `history`, `reload`,
 //! `devtools`, `zoom`, `set_zoom`, `set_viewport`, `page_view`, `fit`,
 //! `set_focus`, `pressed`, `agent_event`, `clicked_herdr`, `covers_changed`, `wake`,
-//! `send_devtools` (an allowed CDP message from proxy.rs) and `agent_gone`.
+//! `send_devtools` (an allowed CDP message from proxy.rs), `tab_op` (a tab change
+//! an agent asked for, which comes back as an `Event`) and `agent_gone`.
 //! Page events and answers go back through `proxy::from_page`.
 
 #[cfg(any(test, all(target_os = "macos", feature = "browser")))]
