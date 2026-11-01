@@ -138,6 +138,9 @@ starts, so export it with a new `AGENT_BROWSER_SESSION` name. When your tab and 
 have no browser, `agent-browser` opens an empty one beside your terminal (the person's
 focus stays where it was) and uses it; you need `herdr-app do browser.open` only to choose where
 it goes. `plugin run herdr herdr.check` opens nothing: with no browser it says `ready: false`.
+The person has a Browser button in the tab bar: it opens a browser pane beside the focused pane and,
+pressed again, closes the tab's browser panes (the next press brings back their sites), so a
+browser you use can be closed under you.
 The person's zoom and responsive size are `browser.zoom` and `browser.viewport`;
 your own `agent-browser set viewport` / `set device` work too, and the last one
 set wins. `browser.screenshot {browser?, path?}` saves a PNG of the shown tab's page

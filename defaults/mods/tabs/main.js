@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { spaces, machines, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -15,6 +15,42 @@ export default class Tabs extends View {
   init() {
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    // Per Herdr tab: the sites its browser had when the Browser button closed it.
+    this.sites = JSON.parse(localStorage.getItem("browser-sites") ?? "{}");
+    // Per Herdr tab: its browser pane that had the focus last.
+    this.lastBrowser = {};
+  }
+
+  saveSites() { localStorage.setItem("browser-sites", JSON.stringify(this.sites)); }
+
+  // Entries of tabs that were closed go. Not while a machine's layout is still
+  // loading: its tabs aren't in spaces() yet.
+  pruneSites(ids) {
+    if (!ids.length || !machines().every(m => m.layout === "ready")) return;
+    const gone = Object.keys(this.sites).filter(id => !ids.includes(id));
+    if (!gone.length) return;
+    for (const id of gone) delete this.sites[id];
+    this.saveSites();
+  }
+
+  // The Browser button: with no browser pane in the tab, open one beside the focused
+  // pane (with the sites it had when the button closed it); else remember the sites
+  // of the one focused last and close every browser pane of the tab.
+  toggleBrowser(tab, mine) {
+    if (mine.length) {
+      const last = mine.find(p => p.pane === this.lastBrowser[tab.id]) ?? mine[mine.length - 1];
+      this.sites[tab.id] = { urls: (last.tabs ?? [{ url: last.url ?? "" }]).map(x => x.url), active: last.active ?? 0 };
+      this.saveSites();
+      for (const p of mine) run("browser.close", { browser: p.browser });
+      return;
+    }
+    const saved = this.sites[tab.id], urls = saved?.urls ?? [];
+    const page = url => (url ? { url } : {});
+    run("browser.open", { place: "right", ...page(urls[0]) });
+    // Each of these acts on the focused browser: the one just opened.
+    for (const url of urls.slice(1)) run("browser.tab.new", page(url));
+    if (urls.length > 1) run("browser.tab.select", { index: saved.active });
+    if (saved) { delete this.sites[tab.id]; this.saveSites(); }
   }
 
   // The side panel is remembered per space: switching shows that space's choice
@@ -79,21 +115,27 @@ export default class Tabs extends View {
     const panel = find(root, "panel"), body = find(root, "panel-body");
     const enabled = shared("workspace.panels") ?? ["files", "changes"];
     this.syncPanel(space, panel, body, enabled);
+    const chip = (id, label, icon, on, action) => h_flex().id(id).h(26).px(8).gap(5).flex_none().items_center().rounded(6)
+      .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
+      .hover(s => s.bg(t.hover)).on_mouse_down("left", stop).on_click(action).child(svg(icon).size(14)).child(label);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
-      return h_flex().id(`panel-${id}`).h(26).px(8).gap(5).flex_none().items_center().rounded(6)
-        .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
-        .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
-        .on_click(() => {
-          if (on) run("layout.hide", { id: "panel" });
-          else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
-        }).child(svg(icon).size(14)).child(label);
+      return chip(`panel-${id}`, label, icon, on, () => {
+        if (on) run("layout.hide", { id: "panel" });
+        else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
+      });
     };
+    const tab = shown.find(c => c.active);
+    const mine = tab ? panes().filter(p => p.tab === tab.id && p.browser) : [];
+    const focusedBrowser = mine.find(p => p.focused);
+    if (focusedBrowser) this.lastBrowser[tab.id] = focusedBrowser.pane;
+    this.pruneSites(spaces().flatMap(s => s.tabs.map(c => c.id)));
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
+      .when(w?.browser && tab, el => el.child(chip("browser-toggle", "Browser", "mods/pane/globe.svg", mine.length > 0, () => this.toggleBrowser(tab, mine))))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))

@@ -54,6 +54,14 @@ keychain choice across installs. Quit and reopen Herdr afterwards: a running
 app starts its browser helpers from the installed bundle, which the install
 replaced.
 
+The tab bar's Browser button (`defaults/mods/tabs/main.js`; it shows where
+`window().browser` is true) opens an empty browser pane beside the focused pane when the
+active tab has none, and is "on" while it has one. Pressed while on, it saves the sites of the
+pane focused last (every tab's address, and the shown tab) in the tabs mod's storage, keyed
+by Herdr tab id, and closes all of the tab's browser panes; the next press opens the pane with
+those sites (`browser.open` for the first, then `browser.tab.new` for the rest, then
+`browser.tab.select`). Entries of tabs that no longer exist are dropped.
+
 ## Try it
 
 `just browser-dev` runs the app on its own home, `/tmp/hbd.dev`, kept

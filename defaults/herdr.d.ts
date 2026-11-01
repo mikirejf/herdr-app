@@ -291,7 +291,8 @@ export function commands(): { name: string; args: { name: string; required: bool
  *  the system draws no window buttons, so draw them (`window.minimize`, `window.maximize`,
  *  `window.close`); on macOS the traffic lights always stay. `pending_keys`: the keys typed
  *  so far of a multi-key shortcut (`["ctrl-b"]` after ctrl-b of "ctrl-b z"), empty otherwise.
- *  `resize_mode`: `pane.resize_mode` is on (h/j/k/l resize panes). Live. */
+ *  `resize_mode`: `pane.resize_mode` is on (h/j/k/l resize panes). `browser`: this build has
+ *  browser panes (macOS with the browser feature), so `browser.open` works. Live. */
 export function window(): {
   platform: "linux" | "macos" | "windows";
   titlebar: "system" | "none";
@@ -301,6 +302,7 @@ export function window(): {
   active: boolean;
   pending_keys: string[];
   resize_mode: boolean;
+  browser: boolean;
 };
 
 /** For a floating mod: where it sits now. `vertical` on the left/right edges, horizontal on

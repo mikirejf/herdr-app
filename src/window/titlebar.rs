@@ -85,6 +85,7 @@ impl AppWindow {
             "fullscreen": window.is_fullscreen(),
             "active": self.window_active,
             "resize_mode": self.resize_mode,
+            "browser": cfg!(all(target_os = "macos", feature = "browser")),
             "pending_keys": window
                 .pending_input_keystrokes()
                 .map(|keys| keys.iter().map(|k| k.unparse()).collect::<Vec<_>>())

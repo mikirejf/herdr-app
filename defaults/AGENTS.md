@@ -172,7 +172,10 @@ agents list on the left, `workspace-chrome`; tabs as pills with a + menu
 that starts a terminal or any installed agent, `new-menu`; panes as cards
 with a header; Files and Changes panels on the right, `files` and
 `changes`, opened from the tab bar and remembered per space (which ones:
-shared `"workspace.panels"`, set by the welcome); a status bar,
+shared `"workspace.panels"`, set by the welcome); in builds with browser
+panes (`window().browser`), a Browser button in the tab bar opens a browser pane
+beside the focused pane and, pressed again, closes the tab's browser panes
+(`tabs` keeps their sites per tab, so the next press brings them back); a status bar,
 `workspace-status`), and as examples `terminals` ("Terminals": tabs in
 the title bar, panes as cards, a space picker) and `win98`
 ("Herdr 98": a whole desktop in one mod, `win98`). Add a layout by
