@@ -448,6 +448,14 @@ fn start_cef() -> anyhow::Result<()> {
         log_severity: LogSeverity::WARNING,
         // Never a DevTools port: agents get CDP through the app.
         remote_debugging_port: 0,
+        // The profile is CEF's global request context (no custom one is made),
+        // so this global setting is the one that applies: a cookie without an
+        // expiry survives a restart, as a signed-in session should.
+        persist_session_cookies: 1,
+        // The profile's cookie key lives in the login keychain under Herdr's
+        // own item, never Chromium's or Chrome's.
+        keychain_service_name: CefString::from("Herdr Safe Storage"),
+        keychain_account_name: CefString::from("Herdr"),
         ..Default::default()
     };
     let args = args::Args::new();
@@ -767,10 +775,6 @@ wrap_app! {
                     std::process::abort();
                 }
             }
-            // A mock key for the profile's cookie encryption: the spike never
-            // touches the person's login keychain. Don't sign into real
-            // accounts in this profile.
-            command_line.append_switch(Some(&CefString::from("use-mock-keychain")));
             for (switch, item) in LIST_SWITCHES {
                 let name = CefString::from(switch);
                 let existing = CefString::from(&command_line.switch_value(Some(&name))).to_string();

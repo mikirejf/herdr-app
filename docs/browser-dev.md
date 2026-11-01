@@ -184,9 +184,14 @@ right-click and typing (the keyboard must stay where you left it). It writes you
   only that tab's agent sessions, never the pane's token or connection.
 - No remote-debugging port is opened. `browser.devtools` opens CEF's own
   DevTools window.
-- The profile (cookies, cache) is `<app home>/browser/profile`; delete it
-  while the app is closed to start fresh. Don't sign into real accounts in
-  it: it uses a mock keychain. The app home, `browser/` and the profile
+- The profile (cookies, cache) is `<app home>/browser/Default` (CEF's
+  chrome-style default profile under its root `browser/`; `browser/profile`
+  stays empty); delete `browser/` while the app is closed to start fresh. Cookies in it are encrypted with
+  a key in the login keychain (item "Herdr Safe Storage", account "Herdr"; macOS may ask
+  once to allow it), and cookies without an expiry are kept across restarts
+  (`persist_session_cookies`). A profile made by an older build, which used
+  Chromium's mock keychain, has cookies the new key cannot decrypt: they are
+  dropped and you sign in again (only test homes had such a profile). The app home, `browser/` and the profile
   are created `0700`; the control socket is `0600` and drops a peer running
   as another user.
 - One URL gate covers `browser.open`, `browser.navigate`, a restored
@@ -332,8 +337,9 @@ shown):
 > http or https site that pane is pointed at: run script in the page (which
 > reads its non-HttpOnly cookies), click, type, and read what the page
 > shows. Any process running as you can also read the profile's cookies
-> from disk, because the prototype encrypts them with Chromium's public
-> test key (`--use-mock-keychain`). Herdr's own agent connection needs a
+> from disk only by getting past the login keychain's prompt: they are
+> encrypted with a key in it (item "Herdr Safe Storage"), as Chrome's are.
+> Herdr's own agent connection needs a
 > 256-bit token and accepts only loopback connections without an `Origin`
 > header. But while an agent-browser session is attached, agent-browser's
 > own stream server (a loopback websocket with no token, in agent-browser's
