@@ -359,6 +359,8 @@ pub struct AppWindow {
     swapped: HashMap<String, String>,
     float_drag: Option<floats::FloatDrag>,
     pane_drag: Option<pane_drag::PaneDrag>,
+    /// `pane.resize_mode`: h/j/k/l and the arrows resize the focused pane, other keys do nothing.
+    resize_mode: bool,
     pane_grip_hover: Option<String>,
     /// Each pane's top row the grip sits centered in: its top header, else a strip.
     pane_grip_rows: RefCell<HashMap<String, f32>>,
@@ -460,6 +462,7 @@ impl AppWindow {
             swapped: HashMap::new(),
             float_drag: None,
             pane_drag: None,
+            resize_mode: false,
             pane_grip_hover: None,
             pane_grip_rows: RefCell::default(),
             win_drag: None,
@@ -2518,6 +2521,30 @@ impl AppWindow {
 
     /// Runs a keys.json action string: `name`, `name:value` (the value fills
     /// the command's first argument), `send:<text>`, or `<mod>.<command>`.
+    /// A key in resize mode, which bindings (ctrl-b r to leave) have already passed up.
+    /// Keys go to a dialog or popup as usual; opening one ends the mode.
+    fn resize_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlays.iter().any(|o| o.kind.modal_keys()) {
+            self.resize_mode = false;
+            cx.notify();
+            return;
+        }
+        cx.stop_propagation();
+        let direction = match key {
+            "h" | "left" => "left",
+            "j" | "down" => "down",
+            "k" | "up" => "up",
+            "l" | "right" => "right",
+            "escape" | "enter" | "r" => {
+                self.resize_mode = false;
+                cx.notify();
+                return;
+            }
+            _ => return,
+        };
+        self.run("pane.resize", json!({ "direction": direction }), window, cx);
+    }
+
     fn run_action(&mut self, action: &str, window: &mut Window, cx: &mut Context<Self>) {
         // `send:` is only meaningful in a terminal, which handles it before it gets here.
         if !action.starts_with("send:") {
@@ -2607,7 +2634,7 @@ impl AppWindow {
         if person {
             crate::telemetry::command(command.name);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.split" | "pane.close" | "pane.swap" | "pane.equalize" | "terminal.keep" | "terminal.park") {
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.split" | "pane.close" | "pane.swap" | "pane.equalize" | "pane.resize" | "terminal.keep" | "terminal.park") {
             let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k));
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
             let machine = if name == "space.new" { Self::arg(&args, "machine") }
@@ -2809,6 +2836,25 @@ impl AppWindow {
                 {
                     c.root.equalize();
                 }
+            }
+            "pane.resize" => {
+                let (axis, forward) = match Self::arg(a, "direction") {
+                    Some("left") => (Axis::Row, false),
+                    Some("right") => (Axis::Row, true),
+                    Some("up") => (Axis::Column, false),
+                    Some("down") => (Axis::Column, true),
+                    other => return self.fail(format!("pane.resize direction is left, right, up or down, not {other:?}")),
+                };
+                if let Some(pane) = Self::owned(a, "pane").or_else(|| self.model.focused_pane())
+                    && let Some(ctx) = self.model.tab_of(&pane).map(|c| c.id.clone())
+                    && let Some(c) = self.model.tab_mut(&ctx)
+                {
+                    c.root.resize(&pane, axis, forward);
+                }
+            }
+            "pane.resize_mode" => {
+                self.resize_mode = !self.resize_mode;
+                cx.notify();
             }
             "pane.focus" => {
                 if Self::arg(a, "pane").is_none()
@@ -4292,7 +4338,7 @@ fn terminal_block<'a>(chrome: &'a Node, focused: Option<&str>) -> Option<&'a Nod
 
 fn needs_model_pane(name: &str, args: &Value) -> bool {
     match name {
-        "pane.split" | "pane.close" | "pane.zoom" | "terminal.show" => AppWindow::arg(args, "pane").is_none(),
+        "pane.split" | "pane.close" | "pane.zoom" | "pane.resize" | "terminal.show" => AppWindow::arg(args, "pane").is_none(),
         "pane.go" | "pane.swap" => true,
         "terminal.open" | "terminal.keep" => matches!(AppWindow::arg(args, "place"), Some("right" | "down")),
         _ => false,
@@ -4526,10 +4572,12 @@ impl Render for AppWindow {
                     }
                 }
             }))
-            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" && this.pane_drag.is_some() {
                     this.cancel_pane_drag(cx);
                     cx.stop_propagation();
+                } else if this.resize_mode {
+                    this.resize_key(&ev.keystroke.key, window, cx);
                 }
             }))
             .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, _| this.pointer = ev.position))
@@ -4736,11 +4784,11 @@ mod tests {
     #[test]
     fn composition_commands_never_default_to_a_source_pane() {
         use serde_json::json;
-        for name in ["pane.split", "pane.close", "pane.zoom", "pane.go", "pane.swap", "terminal.show"] {
+        for name in ["pane.split", "pane.close", "pane.zoom", "pane.resize", "pane.go", "pane.swap", "terminal.show"] {
             assert!(super::needs_model_pane(name, &json!({})), "{name}");
             assert!(super::needs_model_pane(name, &json!({"pane": null})), "{name}");
         }
-        for name in ["pane.split", "pane.close", "pane.zoom", "terminal.show"] {
+        for name in ["pane.split", "pane.close", "pane.zoom", "pane.resize", "terminal.show"] {
             assert!(!super::needs_model_pane(name, &json!({"pane": "explicit-pane"})), "{name}");
         }
         for name in ["terminal.open", "terminal.keep"] {

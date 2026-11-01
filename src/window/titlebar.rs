@@ -84,6 +84,7 @@ impl AppWindow {
             "maximized": window.is_maximized(),
             "fullscreen": window.is_fullscreen(),
             "active": self.window_active,
+            "resize_mode": self.resize_mode,
             "pending_keys": window
                 .pending_input_keystrokes()
                 .map(|keys| keys.iter().map(|k| k.unparse()).collect::<Vec<_>>())

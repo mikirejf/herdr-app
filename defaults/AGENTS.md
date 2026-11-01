@@ -504,6 +504,10 @@ the build doesn't do.
   is dropped (Escape too), and the first key pressed again goes to the
   program once (ctrl-b ctrl-b sends ctrl-b). Plain-letter sequences ("j k")
   type their keys after a second.
+- `"ctrl-b r": "pane.resize_mode"` works like Herdr's resize mode: h/j/k/l or
+  the arrows resize the focused pane until Esc, Enter, r or ctrl-b r; other
+  keys do nothing meanwhile, and `window().resize_mode` is true (the status
+  bar shows RESIZE).
 
 ## Commands
 
@@ -536,7 +540,9 @@ The main ones:
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
   terminal, or a mod pane), `pane.close {pane?}`,
   `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`,
-  `pane.equalize` (equal widths and heights for the current tab's panes, a run of side-by-side panes sharing evenly).
+  `pane.equalize` (equal widths and heights for the current tab's panes, a run of side-by-side panes sharing evenly),
+  `pane.resize {direction, pane?}` (moves the divider on that side of the pane 5% of its row or column; the
+  last pane of a row moves its other divider), `pane.resize_mode` (see Keys).
   `pane.focus {terminal}` prefers the first visible layout terminal block showing that
   address, then its model pane. Clicking a terminal block focuses it too.
   While a layout terminal block is focused, implicit split/close/zoom/go/swap and

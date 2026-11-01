@@ -651,6 +651,46 @@ impl Node {
         }
     }
 
+    /// Moves the divider on `pane`'s edge one step: 5% of its row (`Axis::Row`) or
+    /// column, right or down when `forward`. The divider is the nearest one on the
+    /// pane's side in that direction, else the one on its other side (the last pane
+    /// of a row moves its left divider). Each pane of the pair keeps 10% to 90% of
+    /// their shared space; fixed (px) and hidden children are never resized.
+    pub fn resize(&mut self, pane: &str, axis: Axis, forward: bool) -> bool {
+        let Some(path) = self.path_to(pane) else { return false };
+        let weight = |n: &Node| match n.size {
+            Some(Size::Weight { weight }) => Some(weight),
+            None => Some(1.0),
+            Some(Size::Px { .. }) => None,
+        };
+        let flexible = |n: &Node| !n.hidden && weight(n).is_some();
+        let divider = |toward_end: bool| {
+            path.windows(2).rev().find_map(|pair| {
+                let container = self.find(&pair[0]).filter(|c| c.axis() == Some(axis))?;
+                let children = container.children();
+                let i = children.iter().position(|c| c.id == pair[1]).filter(|&i| flexible(&children[i]))?;
+                let j = if toward_end {
+                    (i + 1..children.len()).find(|&j| !children[j].hidden)?
+                } else {
+                    (0..i).rev().find(|&j| !children[j].hidden)?
+                };
+                flexible(&children[j]).then(|| (pair[0].clone(), i.min(j), i.max(j)))
+            })
+        };
+        let Some((container, a, b)) = divider(forward).or_else(|| divider(!forward)) else { return false };
+        let children = self.find_mut(&container).and_then(Node::children_mut).unwrap();
+        let total: f32 = children.iter().filter(|c| !c.hidden).filter_map(weight).sum();
+        let (wa, wb) = (weight(&children[a]).unwrap(), weight(&children[b]).unwrap());
+        let step = if forward { 0.05 * total } else { -0.05 * total };
+        let new_a = (wa + step).clamp(0.1 * (wa + wb), 0.9 * (wa + wb));
+        if new_a == wa {
+            return false;
+        }
+        children[a].size = Some(Size::Weight { weight: new_a });
+        children[b].size = Some(Size::Weight { weight: wa + wb - new_a });
+        true
+    }
+
     fn segments(&self, axis: Axis) -> usize {
         if self.axis() != Some(axis) {
             return 1;
@@ -979,6 +1019,79 @@ mod tests {
         assert_eq!(n.find("side").unwrap().size, Some(Size::Px { px: 200.0 }));
         let w = weights(&n, &["a", "b"]);
         assert_eq!(w[0], w[1]);
+    }
+
+    fn close(n: &Node, ids: &[&str], want: &[f32]) {
+        let got: Vec<f32> = ids.iter().map(|id| match n.find(id).unwrap().size {
+            Some(Size::Weight { weight }) => weight,
+            None => 1.0,
+            other => panic!("{id}: {other:?}"),
+        }).collect();
+        assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-4) && got.len() == want.len(), "{got:?} != {want:?}");
+    }
+
+    #[test]
+    fn resizing_two_side_by_side_panes_moves_their_divider() {
+        let mut n = Node::container("t", Axis::Row, vec![term("a"), term("b")]);
+        assert!(n.resize("a", Axis::Row, true));
+        close(&n, &["a", "b"], &[1.1, 0.9]);
+        // The right pane has no divider on its right: right moves its left one.
+        assert!(n.resize("b", Axis::Row, true));
+        close(&n, &["a", "b"], &[1.2, 0.8]);
+        assert!(n.resize("b", Axis::Row, false));
+        close(&n, &["a", "b"], &[1.1, 0.9]);
+        // No column to resize in.
+        assert!(!n.resize("a", Axis::Column, true));
+    }
+
+    #[test]
+    fn resizing_the_middle_of_three_moves_the_divider_on_that_side() {
+        let mut n = Node::container("t", Axis::Row, vec![term("a"), term("b"), term("c")]);
+        assert!(n.resize("b", Axis::Row, true));
+        close(&n, &["a", "b", "c"], &[1.0, 1.15, 0.85]);
+        assert!(n.resize("b", Axis::Row, false));
+        close(&n, &["a", "b", "c"], &[0.85, 1.3, 0.85]);
+    }
+
+    #[test]
+    fn resizing_a_nested_pane_finds_the_container_with_the_divider() {
+        // a | (b over c): c resizing left moves the outer divider, down moves b's.
+        let right = Node::container("r", Axis::Column, vec![term("b"), term("c")]);
+        let mut n = Node::container("t", Axis::Row, vec![term("a"), right]);
+        assert!(n.resize("c", Axis::Row, false));
+        close(&n, &["a", "r"], &[0.9, 1.1]);
+        assert!(n.resize("b", Axis::Column, true));
+        close(&n, &["b", "c"], &[1.1, 0.9]);
+        // a | (b | c) as nested rows: b's left divider is the outer one.
+        let inner = Node::container("in", Axis::Row, vec![term("b"), term("c")]);
+        let mut n = Node::container("t", Axis::Row, vec![term("a"), inner]);
+        assert!(n.resize("b", Axis::Row, false));
+        close(&n, &["a", "in"], &[0.9, 1.1]);
+        close(&n, &["b"], &[1.0]);
+    }
+
+    #[test]
+    fn resizing_one_pane_or_a_fixed_neighbor_changes_nothing() {
+        let mut n = Node::container("t", Axis::Row, vec![term("a")]);
+        let before = n.clone();
+        assert!(!n.resize("a", Axis::Row, true));
+        assert_eq!(n, before);
+        let mut side = term("side");
+        side.size = Some(Size::Px { px: 200.0 });
+        let mut n = Node::container("t", Axis::Row, vec![side, term("a")]);
+        let before = n.clone();
+        assert!(!n.resize("a", Axis::Row, false));
+        assert_eq!(n, before);
+    }
+
+    #[test]
+    fn resizing_stops_at_a_tenth_of_the_pair() {
+        let mut n = Node::container("t", Axis::Row, vec![term("a"), term("b")]);
+        for _ in 0..30 {
+            n.resize("a", Axis::Row, true);
+        }
+        close(&n, &["a", "b"], &[1.8, 0.2]);
+        assert!(!n.resize("a", Axis::Row, true));
     }
 
     #[test]

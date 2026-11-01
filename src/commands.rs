@@ -60,6 +60,8 @@ pub const COMMANDS: &[Command] = &[
     cmd("pane.go", &[req("direction")], "Focus the pane to the \"left\", \"right\", \"up\" or \"down\"."),
     cmd("pane.equalize", &[], "Give the panes of the current tab equal widths and heights."),
     cmd("pane.swap", &[req("direction")], "Swap the focused pane with its neighbor in a direction."),
+    cmd("pane.resize", &[req("direction"), opt("pane")], "Move the focused pane's divider a step (5%) \"left\", \"right\", \"up\" or \"down\"."),
+    cmd("pane.resize_mode", &[], "Resize panes with h/j/k/l or the arrows until Esc, Enter or r; other keys do nothing meanwhile."),
     cmd("terminal.peek", &[req("terminal")], "Peek at a running terminal over the tab, with keep-as-tab and close controls."),
     cmd("terminal.show", &[opt("terminal"), opt("pane")], "Show a terminal in a pane for now, in place of its own (no terminal: back)."),
     cmd("terminal.copy", &[], "Copy the focused terminal's selection."),

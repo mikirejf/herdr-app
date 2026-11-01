@@ -260,6 +260,21 @@ Swap the focused pane with its neighbor in a direction.
 |---|---|
 | `direction` | yes |
 
+## `pane.resize`
+
+Move the focused pane's divider a step (5%) "left", "right", "up" or "down".
+
+| Argument | Required |
+|---|---|
+| `direction` | yes |
+| `pane` | no |
+
+## `pane.resize_mode`
+
+Resize panes with h/j/k/l or the arrows until Esc, Enter or r; other keys do nothing meanwhile.
+
+No arguments.
+
 ## `terminal.peek`
 
 Peek at a running terminal over the tab, with keep-as-tab and close controls.
@@ -297,11 +312,12 @@ No arguments.
 
 ## `agent.focus`
 
-Show an agent (sub-agents too).
+Show an agent: by position in the agents list (1 = first), or by terminal (sub-agents too).
 
 | Argument | Required |
 |---|---|
-| `terminal` | yes |
+| `index` | no |
+| `terminal` | no |
 
 ## `agent.next`
 

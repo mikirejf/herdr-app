@@ -247,6 +247,22 @@ mod tests {
         assert!(bindings.is_empty() && !pending);
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_shifted_punctuation_second_key_matches_either_spelling() {
+        use gpui::{KeyContext, Keymap, Keystroke};
+        let contexts = [KeyContext::parse("Herdr layout = main").unwrap(), KeyContext::parse("Terminal").unwrap()];
+        // US shift+/ as macOS reports it (events.rs): "?", shift folded into the key.
+        let question = Keystroke { unshifted_key: Some("/".into()), ..Keystroke::parse("?").unwrap() };
+        for keys in ["ctrl-space ?", "ctrl-space shift-/"] {
+            let mut keymap = Keymap::default();
+            keymap.add_bindings(super::parse(&format!(r#"{{"global": {{"{keys}": "app.help"}}}}"#)).unwrap());
+            let typed = [Keystroke::parse("ctrl-space").unwrap(), question.clone()];
+            let (bindings, pending) = keymap.bindings_for_input(&typed, &contexts);
+            assert_eq!((bindings.len(), pending), (1, false), "{keys}");
+        }
+    }
+
     #[test]
     fn shipped_keys_load() {
         for keys in [include_str!("../defaults/keys.json"), include_str!("../defaults/keys.macos.json")] {

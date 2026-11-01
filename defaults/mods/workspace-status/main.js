@@ -28,6 +28,10 @@ export default class WorkspaceStatus extends View {
       .when(pending.length > 0, el => el.child(h_flex().gap(6).items_center()
         .child(badge("PREFIX"))
         .child(div().text_color(t.foreground).child(pending.join(" ")))))
+      .when(Boolean(window()?.resize_mode), el => el.child(h_flex().gap(6).items_center()
+        .child(badge("RESIZE"))
+        .children([["h/l", "width"], ["j/k", "height"], ["esc", "done"]].map(([k, what]) =>
+          h_flex().gap(4).child(div().text_color(t.foreground).child(k)).child(what)))))
       .when(Boolean(zoomed), el => el.child(badge("ZOOM")))
       .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
       .when(Boolean(space?.branch), el => el.child(label("branch", space.branch)))
