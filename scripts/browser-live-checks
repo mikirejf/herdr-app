@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Hands-on checks for a browser pane that tests can't do: they need a person
+# at the window. Run it in a terminal inside the dev app (`just browser-dev`,
+# with or without --webkit), so agent-browser reaches Herdr's browser.
+#
+#   bash scripts/browser-live-checks
+#
+# It opens scripts/browser-live-checks.html on the agent profile, asks you to
+# allow agent access, then drives the page and asks what you saw. Answers go
+# to a results file it names at the end.
+set -euo pipefail
+
+herdr=${HERDR_APP_CLI:-/tmp/hbd.dev/herdr-app}
+url=${LIVE_CHECKS_URL:-http://127.0.0.1:8765/browser-live-checks.html}
+out=${TMPDIR:-/tmp}/herdr-live-checks-$(date +%Y%m%d-%H%M%S).txt
+
+if [ -z "${AGENT_BROWSER_PROVIDER:-}" ]; then
+  echo "browser-live-checks: run this in a terminal inside the dev app; AGENT_BROWSER_PROVIDER is unset here." >&2
+  exit 1
+fi
+[ -x "$herdr" ] || { echo "browser-live-checks: no dev CLI at $herdr (set HERDR_APP_CLI)." >&2; exit 1; }
+command -v agent-browser >/dev/null || { echo "browser-live-checks: agent-browser is not installed." >&2; exit 1; }
+
+record() { printf '%-28s %s\n' "$1" "$2" | tee -a "$out"; }
+ask() { # ask <name> <question>: records y/n plus an optional note
+  local answer note
+  read -r -p "$2 [y/n] " answer
+  read -r -p "  note (Enter for none): " note
+  record "$1" "$( [ "$answer" = y ] && echo pass || echo FAIL )${note:+ — $note}"
+}
+pause() { read -r -p "$1 (Enter to go on) " _; }
+ab() { echo "+ agent-browser $*"; agent-browser "$@" || echo "  (agent-browser exited $?)"; }
+
+echo "Engine and build: $("$herdr" --version 2>/dev/null || echo unknown)" | tee "$out"
+
+echo; echo "== 1. Open the page and the consent dialog"
+"$herdr" "do" browser.open --profile agent --url "$url"
+read -r -p "Browser id in the new pane's header (e.g. b3): " id
+export HERDR_BROWSER=$id AGENT_BROWSER_SESSION=${AGENT_BROWSER_SESSION:-herdr}-$id
+pause "Click 'Allow agent…' in that pane's header. When the dialog shows, press Tab, then Space, but first read the next line"
+echo "  Expected: Return and Esc cancel; Space presses whichever button has the focus ring."
+ask dialog-keys "Did Tab move the focus ring and Space press only the focused button?"
+pause "Open the dialog again if needed and click Allow"
+ask access-on "Does the header say the agent has access?"
+
+echo; echo "== 2. Iframe console (the fix in this round)"
+ab console
+ask iframe-console "Does the output above show 'MAIN frame console line' and NOT 'FORGED by an iframe'?"
+
+echo; echo "== 3. Agent drag"
+ab drag '#src' '#dst'
+ask drag "Does the page say 'Drag: dropped'?"
+
+echo; echo "== 4. Agent right-click"
+read -r x y < <(agent-browser eval 'const r = document.getElementById("menu").getBoundingClientRect(); Math.round(r.x + r.width / 2) + " " + Math.round(r.y + r.height / 2)' | tr -d '"')
+ab mouse move "$x" "$y"
+ab mouse down right
+ab mouse up right
+ask right-click "Does the page say 'context menu, button 2', with no native menu left open?"
+
+echo; echo "== 5. Focus steal"
+pause "Click into a different Herdr terminal pane (not this one) so it has the keyboard"
+sleep 3
+ab focus '#name'
+ab fill '#name' 'typed by the agent'
+ask focus-kept "Did the keyboard stay in the pane you clicked (type a letter there to check), while the page shows 'Typed: typed by the agent'?"
+
+echo; echo "== 6. Stop agent"
+pause "Click 'Stop agent' in the pane's header"
+if agent-browser get title >/dev/null 2>&1; then record stop-agent "FAIL — the agent still reached the page"; else record stop-agent pass; fi
+
+echo; echo "Results: $out"

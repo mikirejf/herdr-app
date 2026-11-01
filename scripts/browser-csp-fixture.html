@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- No 'unsafe-eval' and no inline script, like github.com: string eval is
+     refused here, so an engine that evals an agent's script fails on it. -->
+<meta http-equiv="Content-Security-Policy" content="script-src 'self'">
+<title>Herdr CSP fixture</title>
+</head>
+<body>
+<!-- Checks agent-browser on a CSP-strict page: open it from the fixture,
+     then `get title`, `get url`, `eval "1+1"` and `back`. -->
+<h1>Herdr CSP fixture</h1>
+<p><a href="browser-fixture.html">Back to the fixture</a></p>
+<label for="q">Search</label>
+<input id="q" name="q" placeholder="Type here">
+</body>
+</html>

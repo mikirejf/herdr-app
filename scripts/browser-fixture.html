@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Herdr fixture</title>
+<style>
+  body { font: 15px/1.5 -apple-system, system-ui, sans-serif; margin: 2rem; max-width: 36rem; }
+  label { display: block; margin: .5rem 0 .2rem; }
+  input, select, button { font: inherit; padding: .3rem .5rem; }
+  #status { margin-top: 1rem; font-weight: 600; }
+</style>
+</head>
+<body>
+<!-- The page the agent-access demo drives: a form, a button,
+     a list. Served over http (just browser-fixture); file: pages don't open. -->
+<h1>Herdr fixture</h1>
+
+<form id="profile" onsubmit="save(event)">
+  <label for="name">Name</label>
+  <input id="name" name="name" placeholder="Your name">
+  <label for="color">Favorite color</label>
+  <select id="color" name="color">
+    <option>red</option>
+    <option>green</option>
+    <option>blue</option>
+  </select>
+  <label><input type="checkbox" id="subscribe"> Subscribe</label>
+  <p><button type="submit">Save</button></p>
+</form>
+
+<p><button id="add" type="button" onclick="addItem()">Add item</button></p>
+<ul id="items">
+  <li>First item</li>
+  <li>Second item</li>
+  <li>Third item</li>
+</ul>
+
+<p><a href="browser-fixture.html" download>Download this page</a></p>
+<p id="status">Nothing saved yet.</p>
+
+<script>
+  function save(event) {
+    event.preventDefault();
+    const name = document.getElementById("name").value || "nobody";
+    const color = document.getElementById("color").value;
+    document.getElementById("status").textContent = `Saved ${name} (${color})`;
+    document.title = `Saved: ${name}`;
+  }
+  function addItem() {
+    const list = document.getElementById("items");
+    const li = document.createElement("li");
+    li.textContent = `Item ${list.children.length + 1}`;
+    list.appendChild(li);
+    document.title = `Items: ${list.children.length}`;
+  }
+</script>
+</body>
+</html>

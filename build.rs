@@ -33,8 +33,30 @@ fn embed(base: &Path, folder: &str, name: &str, file: &str) {
     std::fs::write(Path::new(&std::env::var("OUT_DIR").unwrap()).join(file), code).unwrap();
 }
 
+/// The `browser` feature: cef-dll-sys downloads CEF's ~600 MB distribution
+/// into `target/` when CEF_PATH is unset, inside the repo. Refuse that early
+/// (this script runs before cef-dll-sys's, which waits on its own build
+/// dependencies) with what to do instead.
+fn check_cef_path(base: &Path) {
+    if std::env::var_os("CARGO_FEATURE_BROWSER").is_none() {
+        return;
+    }
+    println!("cargo:rerun-if-env-changed=CEF_PATH");
+    let fix = "set CEF_PATH to a folder outside the repo (e.g. CEF_PATH=~/.cache/herdr-app/cef), or build with `just browser-build` / `just browser-dev`, which default to that";
+    let Some(path) = std::env::var_os("CEF_PATH").filter(|p| !p.is_empty()) else {
+        panic!("the browser feature needs CEF_PATH: without it, CEF (~600 MB) is downloaded into target/; {fix}");
+    };
+    let path = Path::new(&path);
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let repo = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    if !path.is_absolute() || path.starts_with(&repo) {
+        panic!("CEF_PATH={} is inside the repo (or relative); {fix}", path.display());
+    }
+}
+
 fn main() {
     let base = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    check_cef_path(&base);
     embed(&base, "defaults/mods", "DEFAULT_MODS", "default_mods.rs");
     embed(&base, "defaults/icons", "DEFAULT_ICONS", "default_icons.rs");
     embed(&base, "defaults/frame", "FRAME_MODS", "frame_mods.rs");

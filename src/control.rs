@@ -24,10 +24,28 @@ pub fn listen(tx: async_channel::Sender<Request>) {
         return;
     }
     let _ = std::fs::remove_file(&path);
-    let listener = match UnixListener::bind(&path) {
+    // Only this user may connect: the socket is born 0600 (umask around the
+    // bind, so there's no window where it's wider), then set again.
+    #[cfg(target_os = "macos")]
+    // SAFETY: umask only swaps the process's file-mode mask; restored right after.
+    let mask = unsafe { libc::umask(0o077) };
+    let bound = UnixListener::bind(&path);
+    #[cfg(target_os = "macos")]
+    // SAFETY: as above.
+    unsafe {
+        libc::umask(mask)
+    };
+    let listener = match bound {
         Ok(l) => l,
         Err(e) => return tracing::warn!("cannot serve {}: {e}", path.display()),
     };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+            tracing::warn!("cannot make {} private: {e}", path.display());
+        }
+    }
     let _ = std::thread::Builder::new().name("herdr-app-control".into()).spawn(move || {
         for stream in listener.incoming().flatten() {
             let tx = tx.clone();
@@ -36,7 +54,30 @@ pub fn listen(tx: async_channel::Sender<Request>) {
     });
 }
 
+/// A peer running as another user is dropped before anything is read (macOS:
+/// `getpeereid`). Elsewhere the socket's 0600 mode is the only check.
+fn same_user(stream: &UnixStream) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd as _;
+        let (mut uid, mut gid) = (0, 0);
+        // SAFETY: a live socket fd and two out-params of the right type.
+        let ok = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } == 0;
+        // SAFETY: geteuid has no preconditions.
+        return ok && uid == unsafe { libc::geteuid() };
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = stream;
+        true
+    }
+}
+
 fn serve(stream: UnixStream, tx: async_channel::Sender<Request>) {
+    if !same_user(&stream) {
+        tracing::warn!("control socket: dropped a connection from another user");
+        return;
+    }
     let mut line = String::new();
     if BufReader::new(&stream).read_line(&mut line).is_err() {
         return;

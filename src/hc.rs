@@ -368,7 +368,16 @@ impl Core {
     /// Starts a program in a new core terminal and returns its address (`tN`).
     /// Starts a terminal, here or on another machine (`on`: its name in `hc machine ls`).
     pub fn run(&self, argv: Vec<String>, cwd: Option<String>, labels: Value, on: Option<&str>) -> Result<String> {
-        let env = json!({"TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "herdr"});
+        #[allow(unused_mut)]
+        let mut env = json!({"TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "herdr"});
+        // This machine's terminals: agent-browser in them drives Herdr's browser
+        // pane through `herdr-app __agent-browser-provider`.
+        #[cfg(all(target_os = "macos", feature = "browser-pane"))]
+        if on.is_none() {
+            for (k, v) in agent_browser_env() {
+                env[k] = Value::String(v);
+            }
+        }
         let r = self.call("terminal.run", json!({"argv": argv, "cwd": cwd, "env": env, "labels": labels, "on": on, "keep": true}))?;
         r.get("address")
             .and_then(Value::as_str)
@@ -531,4 +540,17 @@ mod tests {
         // 0.10 is newer than 0.9 (numbers, not text).
         assert!(semver("0.10.0") > semver("0.9.3"));
     }
+}
+
+/// `AGENT_BROWSER_*` for a new local terminal: Herdr as agent-browser's
+/// provider, pinned to this app's socket, and a session of its own (the
+/// terminal's id is the core's to give, after it starts).
+#[cfg(all(target_os = "macos", feature = "browser-pane"))]
+fn agent_browser_env() -> Vec<(String, String)> {
+    let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let socket = crate::mods::app_dir().join("herdr-app.sock").to_string_lossy().into_owned();
+    let inherited = std::env::var("AGENT_BROWSER_PLUGINS").ok();
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+    let session = format!("herdr-{:x}{:08x}", std::process::id(), nanos as u32);
+    crate::browser::agent::plugin_env(&exe, &socket, inherited.as_deref(), &session)
 }

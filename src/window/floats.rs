@@ -207,6 +207,7 @@ impl AppWindow {
                 b.w(c.width + border * 2.0).h(n.height + pad * 2.0 + border * 2.0).overflow_hidden()
             })
             .occlude()
+            .children(self.browsers.cover(format!("float {}", f.id)))
             .on_hover(cx.listener(move |this, hovered: &bool, window, cx| this.float_hovered(&hover_id, *hovered, window, cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _, _| this.float_press(&id, &owner_id, ev.position)))
             .child(inner);

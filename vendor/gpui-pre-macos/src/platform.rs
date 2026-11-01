@@ -84,6 +84,18 @@ unsafe fn build_classes() {
         APP_CLASS = {
             let mut decl = ClassDecl::new("GPUIApplication", class!(NSApplication)).unwrap();
             decl.add_ivar::<*mut c_void>(MAC_PLATFORM_IVAR);
+            // HERDR: Chromium (CEF, herdr-app's `browser` feature) needs NSApp to say whether
+            // sendEvent: is on the stack (CefAppProtocol in cef_application_mac.h). Without CEF
+            // nothing reads the flag; the app declares the protocol once CEF's framework loads.
+            decl.add_method(
+                sel!(isHandlingSendEvent),
+                is_handling_send_event as extern "C" fn(&Object, Sel) -> BOOL,
+            );
+            decl.add_method(
+                sel!(setHandlingSendEvent:),
+                set_handling_send_event as extern "C" fn(&Object, Sel, BOOL),
+            );
+            decl.add_method(sel!(sendEvent:), send_event as extern "C" fn(&Object, Sel, id));
             decl.register()
         }
     };
@@ -1366,6 +1378,28 @@ unsafe fn path_from_objc(path: id) -> PathBuf {
     let bytes = unsafe { path.UTF8String() as *const u8 };
     let path = str::from_utf8(unsafe { slice::from_raw_parts(bytes, len) }).unwrap();
     PathBuf::from(path)
+}
+
+// HERDR: CefAppProtocol for Chromium (see build_classes). NSApp is a singleton on the
+// main thread, so one flag serves it.
+static HANDLING_SEND_EVENT: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn is_handling_send_event(_this: &Object, _: Sel) -> BOOL {
+    if HANDLING_SEND_EVENT.load(Ordering::Relaxed) { YES } else { NO }
+}
+
+extern "C" fn set_handling_send_event(_this: &Object, _: Sel, handling: BOOL) {
+    HANDLING_SEND_EVENT.store(handling == YES, Ordering::Relaxed);
+}
+
+/// Like CEF's `CefScopedSendingEvent`: set while the event is dispatched, then the
+/// previous value back, so nested sendEvent: calls stay correct.
+extern "C" fn send_event(this: &Object, _: Sel, event: id) {
+    let was = HANDLING_SEND_EVENT.swap(true, Ordering::Relaxed);
+    unsafe {
+        let _: () = msg_send![super(this, class!(NSApplication)), sendEvent: event];
+    }
+    HANDLING_SEND_EVENT.store(was, Ordering::Relaxed);
 }
 
 unsafe fn get_mac_platform(object: &mut Object) -> &MacPlatform {

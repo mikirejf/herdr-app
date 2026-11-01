@@ -62,6 +62,11 @@ export function playSound(sound: string): null;
  *   terminal.peek {terminal} (peek over the tab, with keep-as-tab and close),
  *   terminal.show {terminal?, pane?} (shown in the pane for now, in place of its own), terminal.copy, terminal.paste,
  *   terminal.right_click {to: "program" | "menu", terminal?} (right-clicks to a program that takes the mouse; Shift: the menu).
+ * Browsers (macOS builds with the browser feature): browser.open {url, place?, pane?, profile?},
+ *   browser.navigate {browser, url}, browser.back|forward|reload|close {browser}, browser.devtools {browser, open?},
+ *   browser.open_external {browser?} (the page in the default web browser; http and https only),
+ *   browser.agent_browser_setup {} (adds Herdr's provider to ~/.agent-browser/config.json for terminals older than this Herdr),
+ *   browser.agent_access {browser, on: false} (only the person's click in the pane turns it on).
  * Agents: agent.next, agent.prev (the agents list's order), agent.focus {index | terminal} (index: position in that order, 1 = first; terminal: sub-agents too).
  * Layout (the shown layout's nodes by id): layout.toggle|show|hide {id}, layout.resize {id, px | weight},
  *   layout.select {stack, child}, layout.set {layout} (personal trees; shipped layouts: click/look fields only), layout.switch {name?} (no name: the next one).
@@ -179,9 +184,12 @@ export function agents(): AgentInfo[];
 export interface PaneInfo {
   pane: string;
   /** null for a mod pane (`pane.split {mod}`): then `mod` names it, and only
-   *  pane, mod, tab, title, focused and zoomed are set. */
+   *  pane, mod, tab, title, focused and zoomed are set. Also null for a browser
+   *  pane: then `browser` and `url` say which page (see browsers()). */
   terminal: string | null;
   mod?: string;
+  browser?: string;
+  url?: string;
   tab: string;
   /** The terminal's title (what the program set), or the mod's name. */
   title: string;
@@ -201,6 +209,40 @@ export interface PaneInfo {
 /** Every pane in every tab. A pane header mod finds its own with
  *  `panes().find((p) => p.pane === props().pane)`. Live. */
 export function panes(): PaneInfo[];
+
+export interface BrowserInfo {
+  /** Its id (`b1`), for browser.navigate, browser.close, ... */
+  browser: string;
+  /** Without its query and fragment unless agent access is on. */
+  url: string;
+  title: string;
+  /** "agent": a separate test profile, the only kind agents can drive. */
+  profile: "agent" | "person";
+  /** The terminal that last attached an agent, as it claimed (HC_TERMINAL_ID). */
+  last_agent: string | null;
+  loading: boolean;
+  can_go_back: boolean;
+  can_go_forward: boolean;
+  /** Where it is: null for a browser block in the layout itself. */
+  space: string | null;
+  pane: string | null;
+  /** Whether agents may drive it. Off until the person turns it on in the pane's header. */
+  agent_access: boolean;
+  /** Its pane is the focused one. */
+  focused: boolean;
+  /** Page zoom in whole percent (100 = normal), as browser.zoom set it. Chromium keeps
+   *  one zoom per host name (all its ports) in each profile, saved across restarts, so every
+   *  page on that host shows the same. */
+  zoom: number;
+  /** The responsive viewport browser.viewport set (preset "phone" or "tablet", or null
+   *  for a custom size); null: the page fills its pane. An agent's own
+   *  Emulation.setDeviceMetricsOverride replaces it on the page but doesn't show here; a pane
+   *  resize that refits a shrunk viewport sends this one again, over the agent's. */
+  viewport: { width: number; height: number; mobile: boolean; preset: "phone" | "tablet" | null } | null;
+}
+
+/** Every open browser (macOS builds with the `browser` feature; empty elsewhere). Live. */
+export function browsers(): BrowserInfo[];
 
 /** Sets agent.next / agent.prev order to match the list a mod displays.
  *  Call when rendering the list. In memory only; missing agents are ignored, new agents

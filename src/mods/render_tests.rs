@@ -76,7 +76,7 @@ fn fixture(populated: bool, props: Value, update: Value) -> BTreeMap<String, Val
     let mut values = BTreeMap::from([
         ("props".into(), props),
         ("machines".into(), json!([{ "name": null, "layout": "ready" }])),
-        ("spaces".into(), json!([])), ("agents".into(), json!([])), ("terminals".into(), json!([])), ("panes".into(), json!([])), ("focused".into(), Value::Null),
+        ("spaces".into(), json!([])), ("agents".into(), json!([])), ("terminals".into(), json!([])), ("panes".into(), json!([])), ("browsers".into(), json!([])), ("focused".into(), Value::Null),
         ("layout".into(), serde_json::from_str(include_str!("../../defaults/layouts/main.json")).unwrap()),
         ("layouts".into(), json!(crate::window::shipped_layouts())),
         ("theme".into(), serde_json::to_value(&*crate::settings::theme()).unwrap()),

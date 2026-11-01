@@ -32,7 +32,8 @@ and terminals, open dialogs, popups and floating blocks, show a live
 terminal inside a block, run any app command, run programs (`exec`) and
 fetch URLs, keep state per mod or shared between mods, animate natively.
 
-You can't: use HTML, CSS, a web view, Node APIs or `setTimeout`; draw
+You can't: use HTML, CSS, a web view (a browser pane is a layout block,
+not a mod), Node APIs or `setTimeout`; draw
 outside your block except through overlays; change how a terminal itself
 draws text; read or change other mods' code at run time.
 
@@ -218,7 +219,9 @@ A layout is a tree of nodes. Four types:
   `{ "terminal": "t7" }`, `{ "tab": "active" }` (the shown tab's
   terminals as it arranges them), or `{ "agent": "focused" }` (one agent's
   terminal, full size: the one chosen with `agent.focus` / `agent.next`, else
-  the focused pane's agent, else the first agent).
+  the focused pane's agent, else the first agent), or `{ "mod": "browser-prototype",
+  "props": { "browser": "b1", "url": "...", "profile"?: "agent" } }` (a web
+  page the app draws, not a mod folder; it never opens in `floating`).
 - `row` / `column`: children side by side / stacked.
 - `stack`: shows one child (`"active": "<child id>"`), with an optional
   `"header"` (a mod that draws tabs, or `"tabs"` for a plain built-in strip).
@@ -356,7 +359,8 @@ The tab block says how each pane of the shown tab is wrapped:
   buttons run pane commands with that pane (`pane.split`, `pane.zoom`,
   `pane.close`). `position`: `top` or `bottom`; `reveal: "hover"` shows it
   only while the pointer is on the pane, drawn over the terminal so the
-  terminal never resizes. The shipped `pane` mod is an example header.
+  terminal never resizes (over a browser pane it is drawn beside the page,
+  as with `always`). The shipped `pane` mod is an example header.
 - `lone: true` frames a tab's only pane too (default: only when split).
 - Each layout has its own, so one can stay bare while another makes
   every pane a card.
@@ -478,8 +482,10 @@ the build doesn't do.
 ```
 
 - Sections: `global`, `layout:<name>` (while `layouts/<name>.json` shows),
-  `terminal` (a terminal has focus), `mod:<name>`. The more specific section
-  wins: `layout:terminals` over `global`, `terminal` over both.
+  `terminal` (a terminal has focus), `mod:<name>`, `browser` (a browser pane's page has
+  the keyboard, macOS: `cmd-=`/`cmd--`/`cmd-0` zoom the page; `terminal` there gives
+  the page the key). The more specific section wins: `layout:terminals` over `global`,
+  `terminal` and `browser` over both.
 - An action is a command (`name`, or `name:value`: the value fills the
   command's first argument), `send:<text>` (types into the terminal),
   `<mod>.<command>` (delivered to that mod's `nextCommand()`), or `terminal`
@@ -573,6 +579,27 @@ The main ones:
   started, including its release outside the pane; other panes don't receive it.
   Terminals display Kitty graphics, including Unicode placeholder images used by
   programs such as yazi; partial images and scrolling follow the placeholder cells.
+- Browsers (macOS builds with the `browser` feature; elsewhere a placeholder):
+  `browser.open {url, place?, pane?, profile?}` (place `"right"` default, `"down"`, `"tab"`;
+  says `{browser, pane}`), `browser.navigate {browser, url}`, `browser.back {browser}`,
+  `browser.forward {browser}`, `browser.reload {browser}`, `browser.close {browser}`,
+  `browser.open_external {browser?}` (the page in the default web browser; http and https only),
+  `browser.agent_browser_setup` (adds Herdr's provider to `~/.agent-browser/config.json`; a terminal
+  older than this Herdr then runs `agent-browser -p herdr --session herdr-$HC_TERMINAL_ID …`),
+  `browser.devtools {browser, open?}`, `browser.zoom {step?: "in"|"out"|"reset", level?: 25-500,
+  browser?}` (percent, Chromium's steps; kept per host on CEF, per pane on WebKit), `browser.viewport {preset?: "phone"|"tablet"|"fit",
+  width?, height?, mobile?, browser?}` (responsive size; zoom and viewport default to the focused
+  browser; an agent's own Emulation override replaces it, last one wins). `herdr-app ls` and `browsers()` list them
+  (with `zoom` and `viewport`);
+  a pane's `browser` names its page. Click a page to type in it; global keys still work.
+  Pages are http, https or about:blank. `profile: "agent"` opens a separate test
+  profile; the person can let agents drive it (`agent-browser`): the pane header's
+  "Allow agent…" opens a macOS dialog, and only its Allow turns access on. An agent-profile
+  browser needs an id shaped like Herdr's (`b` and 1-9 digits): a layout block with another id
+  doesn't open. Only the shape is checked; any such id opens.
+  `browser.agent_access {browser, on: false}` turns it off; nothing else turns it on
+  (not `run()`, not the socket, not the header alone; a `dev-agent-access` test build,
+  which says so in the pane, also takes the socket). The header is a status marker only.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {index | terminal}` (index: position in
   the agents list, 1 = first; the agents mod numbers its first nine rows).
 - Layout: `layout.switch {name?}`, `layout.toggle {id}`, `layout.show {id}`, `layout.hide {id}`,
@@ -785,7 +812,9 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
 - The defaults are mods too, read them as examples: `spaces`, `agents`,
   `tabs` (the tab bar), `menu`, `prompt`, `confirm`, `help`, `toast`,
   Terminals' `picker`, `peek`, and `pane` (an
-  example pane header, not used by the default layouts), and `worktree`
+  example pane header, not used by the default layouts; a browser pane gets
+  back, forward, reload, an address field, zoom, a viewport picker and DevTools from its
+  `browser.js`), and `worktree`
   (git worktrees as spaces: the space menu's and the + menu's New worktree,
   Open worktree (the repo's checkouts, filtered; one already shown is gone
   to) and Remove worktree open it as a dialog with props `{space, folder?,

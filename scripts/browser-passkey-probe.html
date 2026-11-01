@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- What the page sees of WebAuthn, written into its title (herdr-app ls shows it).
+     Add ?get to also try one navigator.credentials.get, timed: on a build that
+     can do passkeys this shows the system sheet. docs/browser-dev.md, Known gaps. -->
+<meta charset="utf-8"><title>probe pending</title>
+<p id="out">pending</p>
+<script>
+(async () => {
+  const r = {};
+  r.pkc = typeof PublicKeyCredential;
+  r.secure = String(window.isSecureContext);
+  try { r.uvpaa = String(await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); } catch (e) { r.uvpaa = "err:" + e.name; }
+  try { const f = PublicKeyCredential.isConditionalMediationAvailable; r.cond = f ? String(await f.call(PublicKeyCredential)) : "absent"; } catch (e) { r.cond = "err:" + e.name; }
+  try { const f = PublicKeyCredential.getClientCapabilities; const c = f ? await f.call(PublicKeyCredential) : null; r.caps = c ? ("pa=" + c.passkeyPlatformAuthenticator + ",hybrid=" + c.hybridTransport + ",uv=" + c.userVerifyingPlatformAuthenticator) : "absent"; } catch (e) { r.caps = "err:" + e.name; }
+  if (location.search.includes("get")) {
+    const t0 = performance.now();
+    try {
+      await navigator.credentials.get({ publicKey: { challenge: new Uint8Array(32), timeout: 4000, userVerification: "preferred" } });
+      r.get = "resolved";
+    } catch (e) { r.get = e.name; }
+    r.ms = Math.round(performance.now() - t0);
+  }
+  const s = "PK " + Object.entries(r).map(([k, v]) => k + "=" + v).join(" ");
+  document.title = s.slice(0, 300);
+  document.getElementById("out").textContent = s;
+})();
+</script>

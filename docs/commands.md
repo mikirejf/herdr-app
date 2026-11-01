@@ -163,6 +163,112 @@ End a terminal and its sub-agents.
 |---|---|
 | `terminal` | yes |
 
+## `browser.open`
+
+Open a web page (http, https or about:blank) in a browser pane (macOS builds with the browser feature): "right" (default) or "down" of a pane (default: the focused one), or as a new "tab" in its space. profile "agent": a separate test profile, the only kind an agent can drive once the person allows it. Says its browser id and pane.
+
+| Argument | Required |
+|---|---|
+| `url` | yes |
+| `place` | no |
+| `pane` | no |
+| `profile` | no |
+
+## `browser.navigate`
+
+Show another page in a browser (an id from `herdr-app ls`).
+
+| Argument | Required |
+|---|---|
+| `browser` | yes |
+| `url` | yes |
+
+## `browser.back`
+
+Go back a page in a browser.
+
+| Argument | Required |
+|---|---|
+| `browser` | yes |
+
+## `browser.forward`
+
+Go forward a page in a browser.
+
+| Argument | Required |
+|---|---|
+| `browser` | yes |
+
+## `browser.reload`
+
+Reload a browser's page.
+
+| Argument | Required |
+|---|---|
+| `browser` | yes |
+
+## `browser.close`
+
+Close a browser and its pane.
+
+| Argument | Required |
+|---|---|
+| `browser` | yes |
+
+## `browser.agent_browser_setup`
+
+Add Herdr's provider to agent-browser's user config (~/.agent-browser/config.json), so a terminal that started before this Herdr can drive a browser pane with: agent-browser -p herdr --session herdr-$HC_TERMINAL_ID. Other plugins and settings in the file are kept.
+
+No arguments.
+
+## `browser.open_external`
+
+Open a browser's page (default: the focused browser) in the default web browser: the page's own address, http or https only. For sign-ins Herdr's browser can't do, such as passkeys.
+
+| Argument | Required |
+|---|---|
+| `browser` | no |
+
+## `browser.devtools`
+
+Open or close a browser's web inspector (no open: toggle): Chromium's DevTools window on the CEF engine; on the WebKit engine the page becomes inspectable from Safari's Develop menu.
+
+| Argument | Required |
+|---|---|
+| `browser` | yes |
+| `open` | no |
+
+## `browser.zoom`
+
+Zoom a browser's page (default: the focused browser): step "in" or "out" along Chromium's steps (25% to 500%), "reset" to 100%, or level, a percent from 25 to 500. The CEF engine keeps one zoom per host name (all its ports) in each profile, saved across restarts, so other pages on that host follow; the WebKit engine keeps it per pane. A number alone (browser.zoom:125) is a level. Says the zoom now, in percent.
+
+| Argument | Required |
+|---|---|
+| `step` | no |
+| `browser` | no |
+| `level` | no |
+
+## `browser.viewport`
+
+Lay a browser's page out at another screen size (default: the focused browser): preset "phone" (390x844), "tablet" (820x1180), both mobile with touch, or "fit" (the pane's own size again); or width and height in pixels, with mobile true or false. A size bigger than the pane is shrunk to fit it. The WebKit engine sets the size only: no mobile, touch or pixel ratio.
+
+| Argument | Required |
+|---|---|
+| `preset` | no |
+| `browser` | no |
+| `width` | no |
+| `height` | no |
+| `mobile` | no |
+
+## `browser.agent_access`
+
+Turn agent access off for a browser (on: false): its agent's connection ends and the page reopens. Turning it on is only for the person: "Allow agent…" in an agent-profile browser's header opens a macOS dialog, and only its Allow turns it on; this command refuses on: true.
+
+| Argument | Required |
+|---|---|
+| `browser` | yes |
+| `on` | yes |
+
 ## `space.select`
 
 Show a space (by position or id).

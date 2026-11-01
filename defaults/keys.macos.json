@@ -58,6 +58,12 @@
     "ctrl-8": "space.select:8",
     "ctrl-9": "space.select:9"
   },
+  "browser": {
+    "cmd-=": "browser.zoom:in",
+    "cmd-+": "browser.zoom:in",
+    "cmd--": "browser.zoom:out",
+    "cmd-0": "browser.zoom:reset"
+  },
   "terminal": {
     "cmd-c": "terminal.copy",
     "cmd-v": "terminal.paste",

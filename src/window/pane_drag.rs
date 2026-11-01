@@ -59,6 +59,7 @@ impl AppWindow {
             .bg(c("background").opacity(0.85))
             .hover(|s| s.bg(c("hover")))
             .flex().flex_col().items_center().justify_center().gap(settings::z(3.)).occlude()
+            .children(self.browsers.cover(format!("pane grip ({pane})")))
             .group("pane-grip")
             .cursor(if dragging { CursorStyle::ClosedHand } else { CursorStyle::OpenHand })
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
@@ -155,6 +156,7 @@ impl AppWindow {
                 None => {}
             }
             Some(div().absolute().left(b.origin.x).top(b.origin.y).w(b.size.width).h(b.size.height)
+                .children(self.browsers.cover(format!("pane drop preview ({id})")))
                 .bg(c("accent").opacity(0.18)).border_2().border_color(c("accent")).into_any_element())
         });
         let this = cx.entity().downgrade();

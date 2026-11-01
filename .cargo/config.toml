@@ -1,0 +1,8 @@
+[env]
+# The `browser` feature only (docs/browser-dev.md). Without
+# CEF_PATH, cef-dll-sys downloads CEF's ~600 MB distribution into target/,
+# inside the repo. build.rs refuses that build, but cargo may already be
+# running cef-dll-sys's build script; this stops its download. A CEF_PATH
+# that already holds CEF needs no download; `just browser-build` and
+# `just browser-dev` set the real CDN for a first download into CEF_PATH.
+CEF_DOWNLOAD_URL = "https://set-cef-path-outside-the-repo.invalid"

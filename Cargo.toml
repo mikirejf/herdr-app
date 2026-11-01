@@ -36,6 +36,40 @@ fancy-regex = "0.19"
 notify = "7"
 sha2 = "0.10"
 
+[features]
+# Browser panes (macOS only), engine-neutral: the block, key routing, the
+# overlay cover, consent, the agents' token proxy and allowlist. Not useful
+# alone: each engine feature below turns it on (pick one).
+browser-pane = ["dep:block2", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:raw-window-handle", "dep:tungstenite"]
+# Engine: Chromium inside the window (CEF in windowed mode).
+# Off by default: it needs the CEF binary distribution and a dev bundle
+# with CEF's helper apps (`just browser-dev`). Building it needs CEF_PATH
+# outside the repo (build.rs refuses otherwise; `just browser-build` sets it).
+browser = ["browser-pane", "dep:cef"]
+# Engine: the system's WKWebView (src/browser/webkit/). Nothing is shipped
+# or downloaded: WebKit is part of macOS. `scripts/browser-dev-bundle --webkit`.
+browser-webkit = [
+    "browser-pane", "dep:objc2-web-kit",
+    "objc2-app-kit/NSBitmapImageRep", "objc2-app-kit/NSGraphicsContext", "objc2-app-kit/NSImage", "objc2-app-kit/NSImageRep",
+    "objc2-foundation/NSArray", "objc2-foundation/NSData", "objc2-foundation/NSDictionary", "objc2-foundation/NSError",
+    "objc2-foundation/NSJSONSerialization", "objc2-foundation/NSKeyValueObserving", "objc2-foundation/NSProcessInfo", "objc2-foundation/NSURL", "objc2-foundation/NSURLRequest",
+    "objc2-foundation/NSValue",
+]
+# Automated tests of agent access only: a debug build with this feature,
+# launched with HERDR_DEV_AGENT_ACCESS=1, lets the control socket turn agent
+# access on, so it no longer needs the person's click. Never in a build
+# people use (`just browser-dev` and `browser-build` leave it out; release
+# builds ignore it). Goes with an engine feature:
+# `scripts/browser-dev-bundle [--webkit] --dev-agent-access`.
+dev-agent-access = ["browser-pane"]
+
+# CEF starts its renderer, GPU and network processes from this helper; a
+# bundle names its copies "Herdr Helper*" (scripts/browser-dev-bundle).
+[[bin]]
+name = "herdr-helper"
+path = "src/bin/herdr-helper.rs"
+required-features = ["browser"]
+
 [[test]]
 name = "shot_pixels"
 path = "tests/shot_pixels.rs"
@@ -52,6 +86,23 @@ gpui_linux = { package = "gpui-pre-linux", version = "=0.3.8", features = ["rend
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_macos = { package = "gpui-pre-macos", version = "=0.3.8", features = ["render-to-image"] }
 libc = "0.2"
+# The `browser` feature only. The `+156.0.14` build decides which CEF binary
+# the build downloads; bindings and framework must match exactly.
+cef = { version = "=156.2.0", default-features = false, features = ["sandbox"], optional = true }
+block2 = { version = "0.6", optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAlert", "NSApplication", "NSButton", "NSControl", "NSEvent", "NSGraphics", "NSResponder", "NSView", "NSWindow", "block2", "objc2-core-foundation"], optional = true }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSDate", "NSGeometry", "NSObjCRuntime", "NSObject", "NSRunLoop", "NSString", "NSTimer", "block2", "objc2-core-foundation", "std"], optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+# The `browser-webkit` feature only: WKWebView, from the OS.
+objc2-web-kit = { version = "0.3.2", default-features = false, features = [
+    "std", "block2", "objc2-app-kit", "objc2-core-foundation",
+    "WKContentWorld", "WKFrameInfo", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKNavigationResponse",
+    "WKPreferences", "WKScriptMessage", "WKScriptMessageHandler", "WKSnapshotConfiguration", "WKUIDelegate",
+    "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWindowFeatures",
+], optional = true }
+# The agent proxy's loopback websocket (src/browser/proxy.rs); already locked for gpui-shell.
+tungstenite = { version = "0.29", default-features = false, features = ["handshake"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 gpui_windows = { package = "gpui-pre-windows", version = "=0.3.8", features = ["render-to-image"] }

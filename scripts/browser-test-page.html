@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Herdr browser test page</title>
+<!-- What a person tries by hand in a browser pane (just browser-dev):
+     typing with dead keys and an IME, a <select> popup, momentum scrolling,
+     the right-click menu, a link that opens a new window. -->
+<style>body{font:15px -apple-system,sans-serif;margin:16px;background:#fdfdf8}li{padding:4px 0}</style>
+<h1>Herdr browser test page</h1>
+<p>Right-click this text for the context menu.</p>
+<p><input id="text" placeholder="type here: option-e e, then Japanese IME" size="40"></p>
+<p><textarea id="area" rows="3" cols="40" placeholder="more typing"></textarea></p>
+<p><select id="pick"><option>first</option><option>second</option><option>third</option></select></p>
+<p><a href="https://example.com/" target="_blank">A new-window link</a> (opens in this pane).</p>
+<ol id="list"></ol>
+<script>for(let i=1;i<=200;i++){const li=document.createElement('li');li.textContent='row '+i;list.append(li)}</script>

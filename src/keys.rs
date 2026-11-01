@@ -5,9 +5,15 @@
 //!   "global":   { "ctrl-shift-t": "tab.new", "ctrl-1": "tab.select:1" },
 //!   "terminal": { "ctrl-left": "send:\u001bb", "ctrl-shift-t": "terminal" },
 //!   "layout:terminals": { "ctrl-]": "space.next" },
-//!   "mod:editor": { "ctrl-s": "editor.save" }
+//!   "mod:editor": { "ctrl-s": "editor.save" },
+//!   "browser":  { "cmd-=": "browser.zoom:in", "cmd-1": "terminal" }
 //! }
 //! ```
+//!
+//! `browser` applies while a browser pane's page has the keyboard (macOS
+//! builds with the browser feature): it ranks above the layout's section
+//! and `global` there (src/browser/keys.rs), and `terminal` gives the key to
+//! the page.
 //!
 //! An action is a command (`pane.split:right`: the value fills its first
 //! argument), `send:<text>` (types into the focused terminal),
@@ -64,11 +70,14 @@ fn tab(section: &str) -> Result<String, String> {
     match section {
         "global" => Ok("Herdr".into()),
         "terminal" => Ok("Terminal".into()),
+        // No GPUI view has it: a page's keys never reach GPUI. The key
+        // monitor reads the section itself (`browser::keys::page_bindings`).
+        "browser" => Ok("Browser".into()),
         s => match (s.strip_prefix("mod:"), s.strip_prefix("layout:")) {
             (Some(p), _) if !p.is_empty() => Ok(format!("mod == {p}")),
             // While layouts/<name>.json is shown (the window's tab says which).
             (_, Some(l)) if !l.is_empty() => Ok(format!("layout == {l}")),
-            _ => Err(format!("unknown section {s:?}: use \"global\", \"terminal\", \"layout:<name>\" or \"mod:<name>\"")),
+            _ => Err(format!("unknown section {s:?}: use \"global\", \"terminal\", \"browser\", \"layout:<name>\" or \"mod:<name>\"")),
         },
     }
 }

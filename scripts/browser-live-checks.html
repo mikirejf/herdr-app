@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Herdr live checks</title>
+<style>
+  body { font: 15px system-ui, sans-serif; margin: 24px; }
+  .box { display: inline-block; width: 140px; height: 70px; margin: 8px; border: 2px solid #888; text-align: center; line-height: 70px; }
+  #src { background: #ddeeff; cursor: grab; }
+  #dst { background: #eeffdd; }
+  #menu { background: #ffeedd; }
+  iframe { width: 420px; height: 60px; border: 1px dashed #888; }
+</style>
+</head>
+<body>
+<h1>Herdr live checks</h1>
+<p>Used by <code>scripts/browser-live-checks</code>. Each line below changes when its check runs.</p>
+
+<div id="src" class="box" draggable="true">drag me</div>
+<div id="dst" class="box">drop here</div>
+<div id="menu" class="box">right-click me</div>
+<p><input id="name" placeholder="agent types here"></p>
+
+<p>Drag: <b id="drag-result">not yet</b></p>
+<p>Right-click: <b id="menu-result">not yet</b></p>
+<p>Typed: <b id="typed">nothing</b></p>
+
+<!-- Posts a console line straight to Herdr's relay handler from inside an
+     iframe. The agent's console must not show it. -->
+<iframe srcdoc="<script>
+  const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.herdrConsole;
+  if (h) h.postMessage(JSON.stringify({ t: 'log', a: ['FORGED by an iframe'] }));
+  document.write(h ? 'iframe posted a forged console line' : 'no relay handler in this iframe');
+</script>"></iframe>
+
+<script>
+  const src = document.getElementById("src"), dst = document.getElementById("dst");
+  src.addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", "herdr"));
+  dst.addEventListener("dragover", (e) => e.preventDefault());
+  dst.addEventListener("drop", (e) => {
+    e.preventDefault();
+    document.getElementById("drag-result").textContent = "dropped (" + e.dataTransfer.getData("text/plain") + ")";
+  });
+  // Pointer fallback, for drags that arrive as plain mouse moves.
+  let down = false;
+  src.addEventListener("mousedown", () => { down = true; });
+  addEventListener("mouseup", (e) => {
+    if (down && dst.contains(document.elementFromPoint(e.clientX, e.clientY))) {
+      document.getElementById("drag-result").textContent = "dropped (mouse)";
+    }
+    down = false;
+  });
+  document.getElementById("menu").addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    document.getElementById("menu-result").textContent = "context menu, button " + e.button;
+  });
+  document.getElementById("name").addEventListener("input", (e) => {
+    document.getElementById("typed").textContent = e.target.value || "nothing";
+  });
+  console.log("MAIN frame console line");
+</script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Runs the browser dev bundle on its own home and core, never your real ones.
+#
+#   browser-dev-run [bundle args]       build, then run in this terminal
+#   browser-dev-run --background [...]  build, then run detached (log: <root>/app.log)
+#   browser-dev-run --relaunch [...]    rebuild, then quit the running one and run detached
+#   browser-dev-run --stop              quit the app and stop its core
+#
+# Bundle args go to browser-dev-bundle; --webkit runs the WKWebView engine's
+# bundle (target/browser-dev-webkit) instead of CEF's.
+#
+# The home (/tmp/hbd.dev) is kept between runs, so the welcome, spaces, pages
+# and the browser profile survive rebuilds. A new home starts with the welcome
+# and the update toast marked seen, and a space holding a terminal and the
+# test page. FRESH=1 uses a
+# new scratch home instead. The test pages (scripts/) are served on
+# 127.0.0.1:8765 while the app runs, unless that port is already taken.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+mode=run
+case "${1:-}" in
+  --background) mode=background; shift ;;
+  --relaunch) mode=relaunch; shift ;;
+  --stop) mode=stop; shift ;;
+esac
+
+# Short: hc's socket path inside it has a 103-byte limit.
+if [ "${FRESH:-}" = 1 ]; then root=$(mktemp -d /tmp/hbd.XXXXXX); else root=/tmp/hbd.dev; fi
+export HERDR_APP_HOME=$root/home XDG_STATE_HOME=$root/state HC_SESSION=hbd-${root##*.}
+export HERDR_APP_ID=herdr-browser-dev HERDR_APP_NO_SOUND=1 HERDR_TELEMETRY=0
+bundle=browser-dev
+for arg in "$@"; do [ "$arg" = --webkit ] && bundle=browser-dev-webkit; done
+# A FRESH home gets its own bundle, so it never replaces the one /tmp/hbd.dev
+# runs from. The kept home's bundle is built beside it and swapped in once
+# nothing runs from the old one.
+if [ "${FRESH:-}" = 1 ]; then
+  final="$root/Herdr Dev.app"; staged=$final
+else
+  final="$PWD/target/$bundle/Herdr Dev.app"; staged="$PWD/target/$bundle/Herdr Dev.next.app"
+fi
+app="$final/Contents/MacOS/Herdr"
+cli=$root/herdr-app
+
+running() { [ -x "$cli" ] && "$cli" status >/dev/null 2>&1; }
+
+quit_app() {
+  running || return 0
+  "$cli" "do" app.quit >/dev/null 2>&1 || true
+  for _ in $(seq 50); do running || return 0; sleep 0.2; done
+  echo "the dev app at $root did not quit; quit it from its window" >&2
+  exit 1
+}
+
+if [ "$mode" = stop ]; then
+  quit_app
+  hc server stop >/dev/null 2>&1 || true
+  echo "stopped the dev app and its core ($root)"
+  exit 0
+fi
+
+if [ "$mode" != relaunch ] && running; then
+  echo "a dev app is already running on $root; use --relaunch or --stop" >&2
+  exit 1
+fi
+
+# The toolchain CI uses (.github/workflows/ci.yml): Rust 1.95.0, Zig 0.16
+# (ghostty-sys builds with it), from rustup and mise when they're not on PATH.
+if ! command -v cargo >/dev/null && [ -x "$HOME/.cargo/bin/cargo" ]; then PATH=$HOME/.cargo/bin:$PATH; fi
+if [ -z "${RUSTUP_TOOLCHAIN:-}" ] && command -v rustup >/dev/null && rustup toolchain list | grep -q '^1\.95\.0'; then
+  export RUSTUP_TOOLCHAIN=1.95.0
+fi
+case $(zig version 2>/dev/null) in
+  0.16.*) ;;
+  *) if command -v mise >/dev/null && zig_dir=$(mise where zig@0.16.0 2>/dev/null); then PATH=$zig_dir:$PATH; fi ;;
+esac
+export PATH
+
+# Build first: a failed build leaves a running app alone.
+BROWSER_DEV_APP=$staged bash scripts/browser-dev-bundle "$@"
+if [ "$mode" = relaunch ]; then quit_app; mode=background; fi
+if [ "$staged" != "$final" ]; then
+  # CEF's helpers can outlive the app by a moment.
+  for _ in $(seq 50); do pgrep -f -- "$final/Contents/" >/dev/null || break; sleep 0.2; done
+  if pgrep -f -- "$final/Contents/" >/dev/null; then
+    echo "another app still runs from $final; the new build is in $staged" >&2
+    exit 1
+  fi
+  rm -rf "$final"
+  mv "$staged" "$final"
+fi
+
+new=0
+if [ ! -d "$root/home" ]; then
+  new=1
+  [ -d "$root" ] || mkdir -m 700 "$root"
+  mkdir -m 700 "$root/home"
+  [ -d "$root/state" ] || mkdir -m 700 "$root/state"
+  # The welcome and the "Updated to …" toast already seen.
+  printf '{"frame.welcomed":"finished"}\n' > "$root/home/shared.json"
+  version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+  printf '{"last_run":"%s","presented":[]}\n' "$version" > "$root/home/update-notes.json"
+fi
+printf '#!/bin/bash\nHERDR_APP_HOME=%q exec %q "$@"\n' "$HERDR_APP_HOME" "$app" > "$cli"
+chmod +x "$cli"
+
+# The app's own child, so it ends with the app.
+serve='exec python3 -m http.server 8765 --bind 127.0.0.1 --directory scripts >/dev/null 2>&1'
+lsof -iTCP:8765 -sTCP:LISTEN >/dev/null 2>&1 && serve=':'
+
+seed='exit 0'
+if [ "$new" = 1 ]; then
+  # shellcheck disable=SC2016 # expands later, in the app's own shell
+  seed='for _ in $(seq 150); do "$0" status >/dev/null 2>&1 && break; sleep 0.2; done
+"$0" do space.new >/dev/null && "$0" do browser.open --url http://127.0.0.1:8765/browser-test-page.html >/dev/null'
+fi
+
+stop_core=:
+[ "${FRESH:-}" = 1 ] && stop_core="hc server stop"
+run="bash -c \"\$1\" & server=\$!; bash -c \"\$2\" \"\$3\" & trap \"kill \$server 2>/dev/null; $stop_core >/dev/null 2>&1\" EXIT; \"\$4\""
+echo "home: $root (log: $root/app.log; drive it: $cli do …)"
+if [ "$mode" = background ]; then
+  nohup bash -c "$run" _ "$serve" "$seed" "$cli" "$app" >> "$root/app.log" 2>&1 &
+  echo "running in the background (pid $!)"
+else
+  bash -c "$run" _ "$serve" "$seed" "$cli" "$app" 2>&1 | tee -a "$root/app.log"
+fi
