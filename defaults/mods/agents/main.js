@@ -1,10 +1,10 @@
 // Agents in grouped or priority views; parents take their most urgent sub-agent's place.
-// A viewed done agent stays in Done until left. Each row is tinted by its status and
-// leads with its agent.focus number (cmd+1..9); the focused one is outlined in the accent.
+// A viewed done agent stays in Done until left. Each row's second line leads with its
+// agent.focus number (cmd+1..9) and a status dot; the focused row is filled with the accent.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from "herdr";
+import { agents, terminals, focused, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, settings, fonts } from "herdr";
 import { readable, over } from "./contrast.js";
 
 function find(node, id) {
@@ -30,17 +30,22 @@ function toggleSidebar() {
 
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 
-function lead(tab, all = panes()) {
-  const mine = all.filter(p => p.tab === tab.id && p.terminal);
-  return mine.find(p => p.program?.agent) ?? mine.find(p => p.focused) ?? mine[0];
+// The agent's own title when it tells something, else its tab name (never a bare
+// number), else its program.
+function heading(a) {
+  const prog = a.program?.name;
+  const live = clean(a.title);
+  const telling = live && live !== prog && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@") && live.toLowerCase() !== a.program?.key;
+  if (telling) return live;
+  return a.tab_name && !/^\d+$/.test(a.tab_name) ? a.tab_name : prog || a.address;
 }
 
-function title(tab, l) {
-  const prog = l?.program?.name;
-  const live = clean(l?.title);
-  const telling = live && live !== prog && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
-  return tab.name === prog && telling ? live : tab.name;
-}
+// The terminal's font, or JetBrains Mono when that one isn't installed.
+const mono = () => {
+  const f = settings().font_family;
+  return fonts().some((n) => n.toLowerCase() === f.toLowerCase()) ? f : "JetBrains Mono";
+};
+
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 // A sub-agent without a pane isn't in agents(): its raw word, error counting as
 // blocked. It's never done: it reports to its parent, and the parent's done is the news.
@@ -53,8 +58,6 @@ const SORTS = [
   { id: "grouped", label: "Grouped by space", icon: "layers" },
 ];
 const sortOf = () => SORTS.find((s) => s.id === shared("agents.sort")) ?? SORTS[0];
-const SECTION = { 4: "Needs you", 3: "Done", 2: "Working", 1: "Idle" };
-const SECTION_STATUS = { 4: "blocked", 3: "done", 2: "working" };
 
 function duration(ms) {
   const m = Math.floor(ms / 60000);
@@ -64,15 +67,11 @@ function duration(ms) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
-// Row geometry: the number column, then the name; sub-agents' tree lines start
-// under the number and their names line up with the parent's.
+// Row geometry: sub-agents' tree lines start under the parent's [N] and their names
+// line up with the status dot after it.
 const ROW_PX = 8;
-const NUMBER_W = 26;
-const GAP = 10;
-const NAME_X = ROW_PX + NUMBER_W + GAP;
-const SUB_X = ROW_PX + NUMBER_W / 2 - 1;
-
-const spinner = (t) => svg("mods/workspace-chrome/spinner.svg").size(13).flex_none().text_color(t.working).spin(900);
+const NAME_X = ROW_PX + 34;
+const SUB_X = ROW_PX + 4;
 
 // Status words as the list shows them: error is blocked.
 const word = (s) => (s === "error" ? "blocked" : s);
@@ -215,18 +214,21 @@ export default class Agents extends View {
       .child(this.status(t, ink, { status: kidStatus(k, this.listed) }, bg, compact));
   }
 
-  // compact: a ! for blocked where a header already says "Needs you".
+  // An 8px dot in the status color; idle is a ring.
+  dot(t, ink, s, bg) {
+    if (s === "idle") return div().size(8).flex_none().rounded(4).border(1.5).border_color(ink.secondary(bg));
+    return div().size(8).flex_none().rounded(4).bg(t[s] ?? "#00000000");
+  }
+
+  // compact: a ! for blocked, not the words.
   status(t, ink, a, bg, compact = false) {
     const s = word(a.status);
-    if (s === "working") return spinner(t);
     if (s === "blocked") {
       const fill = over(t.blocked + "26", ink.solid(bg));
       const badge = div().flex_none().h(20).rounded(5).bg(fill).text_size(12).font_semibold().text_color(ink.tinted(t.blocked, fill)).flex().items_center().justify_center();
       return compact ? badge.w(18).child("!") : badge.px(6).child("Needs you");
     }
-    // Idle: a ring; done: a dot.
-    if (s === "idle") return div().size(8).mx(3).flex_none().rounded(4).border(1.5).border_color(ink.secondary(bg));
-    return div().size(8).mx(3).flex_none().rounded(4).bg(s === "done" ? t.done : "#00000000");
+    return this.dot(t, ink, s, bg).mx(3);
   }
 
   render(cx) {
@@ -258,15 +260,8 @@ export default class Agents extends View {
       return n <= 9 ? String(n) : "";
     };
 
-    const focusFill = over(t.accent + "33", t.chrome);
-    // A row's background: its status tinted in (needs you, working, done), else the
-    // focus fill, else the sidebar's.
-    const tintOf = (a, alpha = "24") => {
-      const s = this.word(a);
-      return s === "idle" ? null : over(t[s] + alpha, t.chrome);
-    };
-    const rowBg = (a) => tintOf(a) ?? (a.focused ? focusFill : t.chrome);
-    const quiet = (a) => this.word(a) === "idle" && !a.focused;
+    const focusFill = over(t.accent + "66", t.chrome);
+    const rowBg = (a) => (a.focused ? focusFill : t.chrome);
     const numberColor = (a, bg) => (a.focused ? ink.tinted(t.accent, bg) : this.word(a) === "idle" ? ink.secondary(bg) : ink.tinted(t[this.word(a)], bg));
 
     // The fold chevron; folded, the count too, colored by the most urgent one.
@@ -296,34 +291,18 @@ export default class Agents extends View {
         .when(!open, (el) => el.child(String(subs.length)));
     };
 
-    // A row reads "space \u00b7 detail": the detail is a tab someone named or the
-    // agent's own title, never an automatic tab number unless two rows would
-    // otherwise read the same.
-    const tabs = spaces().flatMap(s => s.tabs);
-    const label = (a) => {
-      const tab = tabs.find(tab => tab.id === a.tab);
-      return tab ? title(tab, lead(tab)) : a.title || a.program?.name || "";
-    };
-    const detail = new Map(list.map(a => [a.address, /^\d+$/.test(label(a)) ? null : label(a)]));
-    const seen = {};
-    for (const a of list) { const k = `${a.space_name}\u0000${detail.get(a.address) ?? ""}`; seen[k] = (seen[k] ?? 0) + 1; }
-    for (const a of list) {
-      if (detail.get(a.address) == null && seen[`${a.space_name}\u0000`] > 1) detail.set(a.address, label(a));
-    }
-
     // The rail: the number in its status color, and the status.
     const railRow = (a) => {
       const bg = rowBg(a);
       return h_flex()
         .id(`ag-${a.address}`)
         .h(32)
-        .pl(a.focused ? 4 : 6)
+        .pl(6)
         .pr(6)
         .flex_none()
         .items_center()
         .gap(6)
         .bg(bg)
-        .when(a.focused, (el) => el.border_l(2).border_color(t.accent))
         .cursor_pointer()
         .hover((s) => s.bg(over(t.hover, bg)))
         .on_click(() => run("pane.focus", { pane: a.pane }))
@@ -331,20 +310,15 @@ export default class Agents extends View {
         .child(h_flex().w(18).flex_none().items_center().justify_center().child(this.status(t, ink, { status: this.word(a) }, bg, true)));
     };
 
-    // Two lines: the name, then the detail and how long it has been like this.
+    // Two lines: the heading, then number, status, where, and how long it has been like this.
+    const font = mono();
     const row = (a, subs = []) => {
       const bg = rowBg(a);
-      const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
       const when = this.since(a);
       const isPinned = this.pins.includes(a.address);
       const hovered = this.hovered === a.address;
-      // Under a space header the space goes without saying; an automatic tab number says nothing.
-      // Without a space header above (priority, pinned) the row names its space.
-      const full = byPriority || isPinned;
-      const name = full ? a.space_name || label(a) : more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
-      const second = [machine, full ? more ?? a.program?.name : a.program?.name].filter(Boolean).join(" \u00b7 ");
       const pin = div()
         .id(`pin-${a.address}`)
         .flex_none()
@@ -366,13 +340,11 @@ export default class Agents extends View {
         .id(`ag-${a.address}`)
         .h(54)
         .mb(4)
-        .px(a.focused ? ROW_PX - 2 : ROW_PX)
-        .gap(GAP)
+        .px(ROW_PX)
         .flex_none()
-        .rounded(8)
+        .rounded(4)
         .items_center()
         .bg(bg)
-        .when(a.focused, (el) => el.border(2).border_color(t.accent))
         .cursor_pointer()
         .hover((s) => s.bg(over(t.hover, bg)))
         .on_hover((on, cx) => {
@@ -381,15 +353,15 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(() => run("pane.focus", { pane: a.pane }))
-        .child(div().w(NUMBER_W).flex_none().text_center().text_size(24).font_weight(a.focused ? 600 : 400).text_color(numberColor(a, bg)).child(number(a)))
-        .child(v_flex().flex_1().min_w(0).gap(1)
+        .child(v_flex().flex_1().min_w(0).gap(3).font_family(font)
           .child(h_flex().gap(6).items_center()
-            .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().text_color(quiet(a) ? ink.secondary(bg) : ink.primary(bg)).child(name))
+            .child(div().flex_1().min_w(0).truncate().text_size(14).font_weight(700).text_color(a.focused ? t.foreground : t.muted).child(heading(a)))
             .when(subs.length > 0, (el) => el.child(fold(a, subs, bg)))
-            .when(hovered, (el) => el.child(pin))
-            .when(!hovered && this.word(a) === "working", (el) => el.child(spinner(t))))
-          .child(h_flex().gap(6).text_size(12).text_color(ink.secondary(bg))
-            .child(div().flex_1().min_w(0).truncate().child(second))
+            .when(hovered, (el) => el.child(pin)))
+          .child(h_flex().gap(6).items_center().text_size(13).text_color(a.focused ? t.muted : t.dim)
+            .when(number(a) !== "", (el) => el.child(div().flex_none().text_size(14).font_weight(800).text_color(t.accent).child(`[${number(a)}]`)))
+            .child(h_flex().w(13).h(13).flex_none().items_center().justify_center().child(this.dot(t, ink, this.word(a), bg)))
+            .child(div().flex_1().min_w(0).truncate().child([machine, a.space_name].filter(Boolean).join(" \u00b7 ")))
             .when(Boolean(when), (el) => el.child(div().flex_none().child(duration(now - when))))));
     };
 
@@ -402,12 +374,12 @@ export default class Agents extends View {
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a
     // space are next to each other in agents(), so neighbours make a group.
-    const groups = pinned.length ? [{ id: "pinned", label: "Pinned", status: null, members: pinned }] : [];
+    const groups = pinned.length ? [{ id: "pinned", label: "Pinned", members: pinned }] : [];
     for (const a of rest) {
       const r = rankOf(a) || RANK.idle;
       const id = byPriority ? `sec-${r}` : `sp-${a.space}`;
       if (groups.at(-1)?.id === id) groups.at(-1).members.push(a);
-      else groups.push({ id, label: byPriority ? SECTION[r] : a.space_name || "", status: byPriority ? SECTION_STATUS[r] : null, members: [a] });
+      else groups.push({ id, label: a.space_name || "", members: [a] });
     }
 
     // A group's header; it folds the group. Folded, it says how many and the most urgent state.
@@ -429,7 +401,7 @@ export default class Agents extends View {
           open ? this.folded.add(g.id) : this.folded.delete(g.id);
           cx.notify();
         })
-        .child(div().truncate().text_color(g.status ? ink.tinted(t[g.status]) : ink.secondary()).child(g.label))
+        .child(div().truncate().text_color(ink.secondary()).child(g.label))
         .when(byPriority || !open, (el) => el.child(div().text_color(ink.secondary()).child(String(g.members.length))))
         .child(div().flex_1())
         .when(!open, (el) => el
@@ -438,7 +410,10 @@ export default class Agents extends View {
     };
     const rows = collapsed
       ? list.flatMap(withKids)
-      : groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);
+      : groups.flatMap((g, i) => [
+        // Priority sections have no name: the dots say it, a gap parts them.
+        byPriority && g.id !== "pinned" ? div().id(`gap-${g.id}`).h(i === 0 ? 4 : 12).flex_none() : header(g),
+        ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);
 
     return v_flex()
       .size_full()
