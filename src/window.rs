@@ -2918,6 +2918,9 @@ impl AppWindow {
         // A mod someone edited under 0.1.0 still says project.* / context.*.
         let current = crate::keys::current(name);
         let name = current.as_str();
+        if !person && let Some(why) = crate::commands::person_only(name) {
+            return json!({ "error": why });
+        }
         // `name:value`, as in keys.json.
         if let Some((n, v)) = name.split_once(':')
             && let Some(c) = crate::commands::find(n)

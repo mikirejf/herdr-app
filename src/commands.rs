@@ -68,7 +68,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("browser.clear_data", &[],
         "Sign out of everywhere in Herdr's browser: delete every cookie of its profile, clear the HTTP cache and the site storage (local storage, IndexedDB, caches) of every site open in a tab, then reload the open tabs. Says how many cookies it deleted. The Browser menu's \"Clear browsing data\" asks first; this does not."),
     cmd("browser.import_cookies", &[req("source"), req("sites")],
-        "Bring cookies from another browser on this Mac into Herdr's browser: source is an id from `herdr-app __cookie-sources` (Chrome, Brave, Arc, Edge, Firefox profiles), sites an array of registrable domains from `herdr-app __cookie-sites <source>`. Chrome, Brave, Arc and Edge make macOS ask the person to unlock their cookies. Reads only those sites' cookies, sets them in the profile, then reloads the open tabs. Says how many cookies it imported and from how many sites. The Browser menu's \"Import cookies…\" asks the person which sites; this does not."),    // What you see.
+        "Bring cookies from another browser on this Mac into Herdr's browser: source is a profile id (a Chrome, Brave, Arc, Edge or Firefox profile), sites an array of registrable domains. Chrome, Brave, Arc and Edge make macOS ask the person to unlock their cookies. Reads only those sites' cookies, sets them in the profile, then reloads the open tabs; a toast says how many cookies came from how many sites. Only the person can run it, from the browser's \"...\" menu (Import cookies…), which asks which sites: a call over the control socket (herdr-app do, from any terminal, an agent's too) is refused."),    // What you see.
     cmd("space.select", &[opt("index"), opt("id")], "Show a space (by position or id)."),
     cmd("space.next", &[], "Show the next space."),
     cmd("space.prev", &[], "Show the previous space."),
@@ -132,6 +132,16 @@ pub fn find(name: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.name == name)
 }
 
+/// Why a command refuses the control socket (`herdr-app do`, from any terminal,
+/// an agent's too): it hands over something only the person decides, so it runs only from
+/// Herdr's own UI (a key, a click, a mod's `run`).
+pub fn person_only(name: &str) -> Option<&'static str> {
+    match name {
+        "browser.import_cookies" => Some("only the person can import cookies: they do it from the browser's \"...\" menu, Import cookies\u{2026}"),
+        _ => None,
+    }
+}
+
 /// A key's `name:value` shorthand: the value fills the first argument (a
 /// number fills `index` when there is one).
 pub fn shorthand(c: &Command, value: &str) -> Value {
@@ -193,6 +203,15 @@ mod tests {
         let guide = include_str!("../defaults/AGENTS.md");
         let missing: Vec<&str> = COMMANDS.iter().map(|c| c.name).filter(|n| !guide.contains(&format!("`{n}"))).collect();
         assert!(missing.is_empty(), "defaults/AGENTS.md (## Commands) doesn't name: {missing:?}");
+    }
+
+    /// What the control socket runs as an agent (`person: false`) is refused before dispatch.
+    #[test]
+    fn importing_cookies_is_the_persons_alone() {
+        let why = person_only("browser.import_cookies").expect("a socket call must be refused");
+        assert!(why.contains("only the person can import cookies"), "{why}");
+        assert!(find("browser.import_cookies").is_some());
+        assert_eq!(person_only("browser.clear_data"), None);
     }
 
     #[test]

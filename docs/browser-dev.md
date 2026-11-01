@@ -224,11 +224,14 @@ right-click and typing (the keyboard must stay where you left it). It writes you
   The mod lists sources and sites by running the app's own binary through `exec`
   (`"$HERDR_APP_EXE" __cookie-sources` and `__cookie-sites <source id>`, JSON on stdout; macOS only,
   handled first thing in `main.rs`, no window): that touches no keychain and no cookie value.
+  Only the person can run it: `run_as` (`window.rs`) refuses it when `person` is false, which is
+  what the control socket (`herdr-app do`, any terminal, agents) passes; a mod's `run` and keys pass
+  true (`commands::person_only`). The listing subcommands show no cookie value, so they stay open.
   The command (`Browsers::import_cookies`) calls `cookie_import::read` on a thread of its own,
   because macOS' keychain prompt blocks the caller until the person answers, then sets each
   cookie on the global cookie manager (`browser/cookies.rs`: host-only cookies get an empty
   domain, the url is `https://` for secure cookies, else `http://`), flushes the store, reloads the
-  tabs and answers `{imported, failed, sites, tabs_reloaded}`; a toast says it. `failed` counts
+  tabs; a toast reports the counts (`imported`, `failed`, `sites`). `failed` counts
   cookies Chromium refused. Started before the engine is ready, the import waits for it
   (`when_ready`). Debug builds read profiles from `$HERDR_COOKIE_IMPORT_ROOT` (laid out like
   `~/Library/Application Support`) instead of the real ones: use fixtures for tests.

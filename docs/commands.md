@@ -301,6 +301,15 @@ Sign out of everywhere in Herdr's browser: delete every cookie of its profile, c
 
 No arguments.
 
+## `browser.import_cookies`
+
+Bring cookies from another browser on this Mac into Herdr's browser: source is a profile id (a Chrome, Brave, Arc, Edge or Firefox profile), sites an array of registrable domains. Chrome, Brave, Arc and Edge make macOS ask the person to unlock their cookies. Reads only those sites' cookies, sets them in the profile, then reloads the open tabs; a toast says how many cookies came from how many sites. Only the person can run it, from the browser's "..." menu (Import cookies…), which asks which sites: a call over the control socket (herdr-app do, from any terminal, an agent's too) is refused.
+
+| Argument | Required |
+|---|---|
+| `source` | yes |
+| `sites` | yes |
+
 ## `space.select`
 
 Show a space (by position or id).

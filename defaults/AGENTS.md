@@ -605,8 +605,10 @@ The main ones:
   `browser.import_cookies {source, sites}` (brings the chosen sites' cookies over from Chrome, Brave, Arc,
   Edge or Firefox on this Mac into Herdr's browser, then reloads the tabs; `source` is an id from
   `herdr-app __cookie-sources` and `sites` registrable domains from `herdr-app __cookie-sites <source>`, both
-  JSON; says `imported`, `failed`, `sites` and `tabs_reloaded`; for Chrome, Brave, Arc and Edge macOS asks the
-  person for their login password; Firefox needs none, so run it only when asked and only for the sites asked).
+  JSON; a toast says what came over; for Chrome, Brave, Arc and Edge macOS asks the
+  person for their login password; Firefox needs none). **Only the person can run it**: the browser's "..." menu,
+  Import cookies…, asks which sites; `herdr-app do` from any terminal (an agent's too) is refused. A mod's `run`
+  and a key binding are the person's own and work).
   `herdr-app ls` and `browsers()` list them
   (with `zoom` and `viewport`, and every tab as `tabs: [{id, url, title, loading}]` with the shown one's
   index as `active`; the other fields describe the shown tab, and navigate, back, forward, reload, zoom,
