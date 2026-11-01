@@ -35,7 +35,10 @@ export default class WorkspaceStatus extends View {
     const space = spaces().find(s => s.active);
     const list = agents();
     const needs = list.filter(a => a.status === "blocked").length;
-    const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
+    const look = settings();
+    // The terminal's own fallback when the layout's font isn't installed.
+    const family = fonts().some(n => n.toLowerCase() === look.font_family.toLowerCase()) ? look.font_family : "JetBrains Mono";
+    const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(look.font_size)).child(text);
     // A multi-key shortcut is half typed (ctrl-b, waiting for z): as Herdr's PREFIX mode.
     const pending = window()?.pending_keys ?? [];
     const zoomed = space?.tabs.find(tb => tb.active)?.zoomed;
@@ -50,23 +53,21 @@ export default class WorkspaceStatus extends View {
         return b ? [[this.keyName(b.keys.slice(typed.length + 1)), what]] : [];
       })];
     const resizing = Boolean(window()?.resize_mode);
-    // While a mode is active the bar is only that mode, set in the terminal's font and
-    // spaced in its character cells like Herdr's mode bar.
+    const bar = () => h_flex().size_full().px(14).items_center().bg(t.chrome).border_t(1).border_color(t.border)
+      .font_family(family).text_size(look.font_size);
+    // While a mode is active the bar is only that mode, spaced in the terminal's
+    // character cells like Herdr's mode bar.
     if (resizing || pending.length > 0) {
-      const look = settings();
-      // The terminal's own fallback when the layout's font isn't installed.
-      const family = fonts().some(n => n.toLowerCase() === look.font_family.toLowerCase()) ? look.font_family : "JetBrains Mono";
       const gap = n => div().child(" ".repeat(n));
       const [name, fill, pairs] = resizing
         ? ["RESIZE", t.ansi5, [["h/l", "width"], ["j/k", "height"], ["esc", "done"]]]
         : ["PREFIX", t.accent, prefixHints];
-      return h_flex().size_full().px(14).items_center().bg(t.chrome).border_t(1).border_color(t.border)
-        .font_family(family).text_size(look.font_size).text_color(t.dim)
+      return bar().text_color(t.dim)
         .child(badge(` ${name} `, fill))
         .children(pairs.flatMap(([k, what], i) => [gap(i > 0 || resizing ? 2 : 1),
           div().text_color(t.accent).font_weight(700).child(k), gap(1), div().child(what)]));
     }
-    return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8).text_color(t.muted)
+    return bar().gap(16).text_color(t.muted)
       .when(Boolean(zoomed), el => el.child(badge("ZOOM", t.accent).px(6)))
       .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
       .when(Boolean(space?.branch), el => el.child(label("branch", space.branch)))
