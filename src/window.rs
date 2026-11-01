@@ -29,8 +29,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 const HEADER_HEIGHT: f32 = 30.0;
-/// The height of an agent browser's header (`AppWindow::agent_bar`).
-const AGENT_HEADER: f32 = 26.0;
 const HANDLE: f32 = 6.0;
 
 // The three native buttons plus their trailing breathing room (also used by the tabs mod).
@@ -71,8 +69,7 @@ fn separator_line(row: bool, width: f32, color: Hsla, top: f32) -> Div {
 
 /// Whether a pane frame's header is drawn over the pane (`reveal: "hover"`)
 /// rather than beside it. Never over a browser pane: GPUI can't draw over
-/// the page's native view, so it would show only where Herdr draws (an
-/// agent browser's header, which it would hide on hover).
+/// the page's native view.
 fn header_over(hover: bool, content: Option<&Content>) -> bool {
     hover && !matches!(content, Some(Content::Browser { .. }))
 }
@@ -1616,156 +1613,10 @@ impl AppWindow {
         cx.notify();
     }
 
-    /// The header of an agent-profile browser block: a warning that this is
-    /// a test profile, whether agent access is on (and which terminal last
-    /// attached, as it claimed), and its button. It is a status marker, not
-    /// the control: "Allow agent…" only opens the native macOS dialog
-    /// (`ask_agent_access`), and access turns on only from that dialog's
-    /// Allow. "Stop agent" turns access off at once.
-    fn agent_bar(&self, node: &str, browser: &str, cx: &mut Context<Self>) -> AnyElement {
-        let (on, last) = self.browsers.agent_state(browser).unwrap_or((false, None));
-        // The id, so the person can match the native dialog ("Browser b3, …") to this pane.
-        let id = crate::browser::log_safe(browser);
-        let state = match (on, last) {
-            (false, _) => format!("Agent access off · {id}"),
-            (true, None) => format!("Agent access ON · {id}"),
-            (true, Some(t)) => format!("Agent access ON · {id} · last: terminal {t} (claimed)"),
-        };
-        let b = browser.to_owned();
-        let (label, sets) = crate::browser::access_button(on);
-        div()
-            .flex_none()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .h(settings::z(AGENT_HEADER))
-            .bg(if on { c("blocked") } else { c("raised") })
-            .text_size(settings::z(12.0))
-            .text_color(c("foreground"))
-            .child(div().flex_1().overflow_hidden().whitespace_nowrap().child(crate::browser::dev_switch_note().unwrap_or("Test profile: don't sign into real accounts.")))
-            .child(div().whitespace_nowrap().child(state))
-            .child(
-                div()
-                    .id(SharedString::from(format!("agent-access-{node}")))
-                    .px_2()
-                    .rounded_sm()
-                    .bg(c("accent"))
-                    .text_color(c("accent_foreground"))
-                    .cursor_pointer()
-                    .child(label)
-                    // It does what the label said, not a toggle of the live state.
-                    .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
-                        if sets {
-                            // A double click's second click opens nothing.
-                            if ev.click_count() <= 1 {
-                                this.ask_agent_access(&b, window, cx);
-                            }
-                            return;
-                        }
-                        let _ = this.set_agent_access(&b, false, crate::browser::Source::PaneControl);
-                        this.publish(cx);
-                        cx.notify();
-                    })),
-            )
-            .into_any_element()
-    }
-
-    /// "Allow agent…": the native macOS dialog asking whether agents may
-    /// drive `browser` (`browser::confirm`). Only its Allow turns access on
-    /// (`Browsers::answer`). It runs from a foreground task, outside every
-    /// borrow of the window: AppKit's modal loop runs inside the call.
-    fn ask_agent_access(&mut self, browser: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let ask = match self.browsers.ask(browser) {
-            Ok(ask) => ask,
-            Err(e) => {
-                tracing::info!("browser: no agent access dialog for {}: {e}", crate::browser::log_safe(browser));
-                let spec = json!({"kind":"toast", "notification":{"title":"agent access","body":e,"level":"error"}});
-                self.open_overlay(mods::new_overlay_id(), spec, window, cx);
-                return;
-            }
-        };
-        cx.spawn_in(window, async move |this, cx| {
-            let reply = crate::browser::confirm(&ask);
-            let _ = this.update_in(cx, |this, window, cx| {
-                if let Err(e) = this.browsers.answer(&ask, reply) {
-                    let spec = json!({"kind":"toast", "notification":{"title":"agent access","body":e,"level":"error"}});
-                    this.open_overlay(mods::new_overlay_id(), spec, window, cx);
-                }
-                this.publish(cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// While any browser has agent access on, a strip along the bottom of the
-    /// window names each one, with a Stop button. It sits outside the layout,
-    /// so hiding, moving or editing a block, or switching tab or space, can't
-    /// hide it. It is informational: a mod, a theme or a page can still
-    /// cover or recolor it.
-    fn agent_watch(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let on = self.browsers.agents_on();
-        if on.is_empty() {
-            return None;
-        }
-        let mut strip = div()
-            .id("agent-watch")
-            .flex_none()
-            .w_full()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .h(settings::z(24.0))
-            .overflow_hidden()
-            .bg(c("blocked"))
-            .text_size(settings::z(12.0))
-            .text_color(c("foreground"));
-        if let Some(note) = crate::browser::dev_switch_note() {
-            strip = strip.child(div().whitespace_nowrap().child(note));
-        }
-        for (browser, last) in on {
-            let label = match last {
-                Some(t) => format!("Agent access ON: {browser} · last: terminal {t} (claimed)"),
-                None => format!("Agent access ON: {browser}"),
-            };
-            let b = browser.clone();
-            strip = strip.child(div().whitespace_nowrap().child(label)).child(
-                div()
-                    .id(SharedString::from(format!("agent-watch-stop-{browser}")))
-                    .px_2()
-                    .rounded_sm()
-                    .bg(c("accent"))
-                    .text_color(c("accent_foreground"))
-                    .cursor_pointer()
-                    .child("Stop agent")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let _ = this.set_agent_access(&b, false, crate::browser::Source::PaneControl);
-                        this.publish(cx);
-                        cx.notify();
-                    })),
-            );
-        }
-        Some(strip.into_any_element())
-    }
-
-    /// Turns agent access for `browser` on or off. On only
-    /// from the native dialog's Allow (or the dev switch of a dev-agent-access
-    /// test build); off
-    /// from anywhere, and off revokes the agent's token and ends its
-    /// connection, which reopens the page (nothing the agent set survives).
-    fn set_agent_access(&mut self, browser: &str, on: bool, from: crate::browser::Source) -> Result<Value, String> {
-        self.browsers.set_agent_access(browser, on, from)?;
-        Ok(json!({ "browser": browser, "agent_access": on }))
-    }
-
     /// `{ attach: { terminal, session, browser? } }`: picks the caller's
     /// browser (`browser::agent::select`) and hands back its token url.
     /// `terminal` is the caller's claim (`HC_TERMINAL_ID`): a routing hint,
-    /// not an identity; the gate is the person's switch on the browser.
+    /// not an identity.
     fn attach_agent(&mut self, req: &Value) -> Result<Value, String> {
         let terminal = req.get("terminal").and_then(Value::as_str).filter(|t| !t.is_empty()).ok_or_else(crate::browser::not_in_herdr)?;
         if terminal.contains('/') {
@@ -1785,7 +1636,7 @@ impl AppWindow {
         let wanted = req.get("browser").and_then(Value::as_str);
         let tab_of = |p: &str| self.model.tab_of(p).map(|t| t.id.clone());
         let check = req.get("check").and_then(Value::as_bool).unwrap_or(false);
-        let r = self.browsers.attach(terminal, &space, &tab, wanted, check, &tab_of);
+        let r = self.browsers.attach(&space, &tab, wanted, check, &tab_of);
         if let Ok(v) = &r
             && !check
         {
@@ -1806,17 +1657,10 @@ impl AppWindow {
     }
 
     /// `browser.open`: a browser pane beside a pane, or as a new tab in its space.
-    /// `profile`: `"agent"` (a separate Chromium profile, the only kind an
-    /// agent may drive) or `"person"` (default).
-    fn open_browser(&mut self, url: &str, place: &str, pane: Option<String>, profile: Option<&str>) -> Result<Value, String> {
-        let profile = match profile {
-            None | Some("person") => None,
-            Some("agent") => Some("agent".to_owned()),
-            Some(other) => return Err(format!("browser.open profile is \"agent\" or \"person\", not {other:?}")),
-        };
+    fn open_browser(&mut self, url: &str, place: &str, pane: Option<String>) -> Result<Value, String> {
         let (browser, url) = self.browsers.prepare_open(url, &self.model, &self.chrome)?;
         let target = pane.or_else(|| self.model.focused_pane());
-        let block = |id: &str| Node::block(id, Content::Browser { browser: browser.clone(), url: url.clone(), profile: profile.clone() });
+        let block = |id: &str| Node::block(id, Content::Browser { browser: browser.clone(), url: url.clone() });
         match place {
             "right" | "down" => {
                 let target = target.ok_or("no pane to open the browser beside: make a space first (space.new), or use place \"tab\"")?;
@@ -3380,31 +3224,8 @@ impl AppWindow {
             }
             // ---- browsers
             "browser.open" => {
-                let r = self.open_browser(Self::arg(a, "url").unwrap_or_default(), Self::arg(a, "place").unwrap_or("right"), Self::owned(a, "pane"), Self::arg(a, "profile"));
+                let r = self.open_browser(Self::arg(a, "url").unwrap_or_default(), Self::arg(a, "place").unwrap_or("right"), Self::owned(a, "pane"));
                 self.answer(r);
-            }
-            // Off from anywhere; on only from the native dialog's Allow
-            // (`ask_agent_access`; the pane button only opens it), never from
-            // here: an agent can reach the socket and write mods. `person` here
-            // means a mod's run(), a key or a menu, which agents can also write.
-            "browser.agent_access" => {
-                let b = Self::arg(a, "browser").unwrap_or_default().to_owned();
-                let on = a.get("on").and_then(Value::as_bool).unwrap_or(false);
-                let from = if person {
-                    crate::browser::Source::Mod
-                } else if on && crate::browser::dev_switch() {
-                    #[cfg(all(debug_assertions, feature = "dev-agent-access"))]
-                    tracing::warn!("browser: DEV SWITCH (dev-agent-access build): the control socket turns agent access on for {}", crate::browser::log_safe(&b));
-                    crate::browser::Source::DevSwitch
-                } else {
-                    crate::browser::Source::Socket
-                };
-                let r = self.set_agent_access(&b, on, from);
-                // Not through sync (nothing else changed), but the header, the
-                // strip and the mods' data must show the new state at once.
-                self.publish(cx);
-                cx.notify();
-                return self.answer(r);
             }
             "browser.close" => {
                 let b = Self::arg(a, "browser").unwrap_or_default();
@@ -3964,7 +3785,7 @@ impl AppWindow {
             return self.world();
         }
         // agent-browser's provider (`herdr-app __agent-browser-provider`): a
-        // token url for the caller's browser, if the person allowed it. Only
+        // token url for the caller's browser. Only
         // the socket answers this; it is no command, so no mod or key can.
         if let Some(attach) = cmd.get("attach") {
             return match self.attach_agent(attach) {
@@ -4328,35 +4149,20 @@ impl AppWindow {
                 None => div().into_any_element(),
             },
             Content::Mod { .. } => self.render_slot(&n.id, cx),
-            Content::Browser { browser, url, .. } => {
+            Content::Browser { browser, url } => {
                 let id = n.id.clone();
-                // An agent-profile browser gets Herdr's own header: the test-profile
-                // warning, the agent-access state, and the button that opens the
-                // native dialog (the only way agent access turns on).
-                // Whether to draw it comes from the open browser (fixed when it
-                // opened), never the block's `profile`: agents can edit layouts, and
-                // removing the field must not hide the marker while access is on.
-                let bar = self.browsers.agent_state(browser).map(|_| self.agent_bar(&n.id, browser, cx));
                 div()
                     .size_full()
-                    .flex()
-                    .flex_col()
-                    .children(bar)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .relative()
-                            // The page takes clicks itself once it shows; until then a click focuses the pane.
-                            .on_any_mouse_down(cx.listener(move |this, _, window, cx| {
-                                if this.model.tab_of(&id).is_some() && this.model.focused_pane().as_deref() != Some(id.as_str()) {
-                                    this.model.focus_pane(&id);
-                                    this.focused_pane = None;
-                                    this.sync(window, cx);
-                                }
-                            }))
-                            .child(self.browsers.element(&n.id, browser, url, crate::browser::Look { surface: c("surface"), text: c("foreground"), dim: c("dim") })),
-                    )
+                    .relative()
+                    // The page takes clicks itself once it shows; until then a click focuses the pane.
+                    .on_any_mouse_down(cx.listener(move |this, _, window, cx| {
+                        if this.model.tab_of(&id).is_some() && this.model.focused_pane().as_deref() != Some(id.as_str()) {
+                            this.model.focus_pane(&id);
+                            this.focused_pane = None;
+                            this.sync(window, cx);
+                        }
+                    }))
+                    .child(self.browsers.element(&n.id, browser, url, crate::browser::Look { surface: c("surface"), text: c("foreground"), dim: c("dim") }))
                     .into_any_element()
             }
             Content::Agent { .. } => match self.shown_agent() {
@@ -4747,8 +4553,7 @@ impl AppWindow {
 }
 
 /// A browser block in `herdr-app status`: the open browser's url and title
-/// (`info`, which keeps the query only while agent access is on), or, when
-/// it isn't open, the tab document's url without query or fragment (codes
+/// (`info`), or, when it isn't open, the tab document's url without query or fragment (codes
 /// and magic links stay in the tab document; restore needs them).
 fn browser_status(info: Option<Value>, browser: &str, pane: &str, saved_url: &str) -> Value {
     match info {
@@ -5082,11 +4887,6 @@ impl Render for AppWindow {
         }
         let focused = self.focused_path();
         let tree = self.render_node(&self.chrome, &focused, None, cx);
-        // The agent-access strip takes the bottom of the window from the layout.
-        let tree = match self.agent_watch(cx) {
-            Some(strip) => div().size_full().flex().flex_col().child(div().flex_1().min_h_0().flex().child(tree)).child(strip).into_any_element(),
-            None => tree,
-        };
         let tree = self.window_frame(tree, window, cx);
         let overlays = self.render_overlays(window.viewport_size(), cx);
         let tracker = self.float_tracker(cx);
@@ -5187,8 +4987,8 @@ mod tests {
     #[test]
     fn a_hover_header_is_never_drawn_over_a_browser_pane() {
         use crate::layout::Content;
-        let browser = Content::Browser { browser: "b1".into(), url: "https://example.test/".into(), profile: Some("agent".into()) };
-        assert!(!super::header_over(true, Some(&browser)), "a hover header would sit on the agent header");
+        let browser = Content::Browser { browser: "b1".into(), url: "https://example.test/".into() };
+        assert!(!super::header_over(true, Some(&browser)), "a hover header would sit under the page's native view");
         assert!(!super::header_over(false, Some(&browser)));
         let terminal = Content::Terminal { terminal: "t1".into() };
         assert!(super::header_over(true, Some(&terminal)));

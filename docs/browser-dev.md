@@ -5,9 +5,6 @@ Embedded Framework) in windowed mode, one native view per page over the
 window. It's behind the Cargo feature `browser`, off by default; other
 builds show a placeholder where a browser block is.
 
-What the prototype is for, what it asks of the core, its measured size and
-signing, and its main gaps: [browser-prototype.md](browser-prototype.md).
-
 ## Build and run
 
 ```sh
@@ -80,10 +77,8 @@ keys and an IME, a `<select>`, a long list to scroll, a right-click menu and
 a new-window link.
 
 `bash scripts/browser-live-checks`, run in a terminal inside the dev app,
-walks the agent checks that need a person at the window: the consent
-dialog's keys, an agent's drag, right-click and typing (the keyboard must
-stay where you left it), Stop agent, and that an iframe can't post lines
-into the agent's console. It writes your answers to a results file.
+walks the agent checks that need a person at the window: an agent's drag,
+right-click and typing (the keyboard must stay where you left it). It writes your answers to a results file.
 
 ## How it behaves
 
@@ -135,7 +130,7 @@ into the agent's console. It writes your answers to a results file.
   (`127.0.0.1:8765` and `127.0.0.1:8799` zoom together, `localhost` is
   another host), every open page there follows, a page that moves to another
   host takes that host's zoom, and the profile saves it, so it outlasts a
-  restart. The person's and the agent profile keep separate zooms.
+  restart.
   `browsers()` and `herdr-app ls` show it as `zoom` (percent).
 - **Responsive size.** `browser.viewport {preset: "phone"}` lays the page out
   at 390x844 (pixel ratio 3), `"tablet"` at 820x1180 (ratio 2), both as
@@ -168,7 +163,7 @@ into the agent's console. It writes your answers to a results file.
   DevTools window.
 - The profile (cookies, cache) is `<app home>/browser/profile`; delete it
   while the app is closed to start fresh. Don't sign into real accounts in
-  it: it uses a mock keychain. The app home, `browser/` and both profiles
+  it: it uses a mock keychain. The app home, `browser/` and the profile
   are created `0700`; the control socket is `0600` and drops a peer running
   as another user.
 - One URL gate covers `browser.open`, `browser.navigate`, a restored
@@ -176,61 +171,17 @@ into the agent's console. It writes your answers to a results file.
   `about:blank` only. A popup from a frame of another origin needs a click.
   Logs keep a url's scheme, host and path only.
 
-## Agents drive a page (agent access)
+## Agents drive a page
 
-An agent in a Herdr terminal can drive a browser pane with
-[`agent-browser`](https://github.com/vercel-labs/agent-browser), once the
-person allows it for that pane:
+An agent in a Herdr terminal can drive any browser pane with
+[`agent-browser`](https://github.com/vercel-labs/agent-browser). There is no
+consent step, no separate agent profile and no per-pane switch: every browser
+pane uses the person's own profile, and an agent that attaches gets that
+page with its sign-ins.
 
-1. `herdr-app do browser.open --profile agent --url http://127.0.0.1:8765/browser-fixture.html`.
-   `profile: "agent"` is a separate Chromium profile
-   (`<app home>/browser/agent-profile`); only such a browser can be driven.
-   Its header says "Test profile: don't sign into real accounts." Downloads
-   are refused in it.
-2. Click **Allow agent…** in that header. It turns nothing on. It opens a
-   macOS dialog, "Let agents drive this browser?", naming the browser, its
-   profile and its site (scheme and host only). The header shows the same
-   browser id ("Agent access off · b1"), so you can match the dialog to the
-   pane. An agent-profile browser's id must have the shape of the ids
-   Herdr gives out: `b` and 1 to 9 digits, no leading zero
-   (`registry::herdr_id`). A layout block on the agent profile with any
-   other id never opens, so an agent can't put words of its own into the
-   dialog through a layout. The check is the shape only: an agent that
-   writes a layout block can still open an agent-profile browser under
-   any such id, including one Herdr never gave out or a closed browser's
-   id. The site is the page's host, which the page's owner chose.
-   Access turns on only when
-   you click **Allow** in that dialog; the log says
-   `agent access on browser=b1 by=native confirm`. **Cancel** is the
-   default button, so Return and Esc cancel; **Allow** has no key, and it
-   stays disabled for half a second after the dialog shows, so a double
-   click whose first click opened the dialog can't land on it. The dialog
-   doesn't open while Herdr isn't the active app or while another such
-   dialog is open, and an answer counts only if Herdr is still the active
-   app and Herdr's record of the browser still has it open at the site the
-   dialog named. That record is checked as the dialog closes, before Herdr
-   handles any page event from while it was open, so a page that
-   went to another site while the dialog was open isn't caught: access
-   turns on for that browser at its new site. The
-   dialog is app-modal and AppKit draws it in its own window, above every
-   view in Herdr's window (GPUI's drawing and the pages): no layout, mod,
-   theme, page or Herdr command can draw over it, move it or answer it.
-   The header and the strip below are status markers Herdr draws, not the
-   control: a mod or a page can still cover or recolor them, which can
-   mislead you about the state but can't turn access on.
-   Nothing else turns agent access on:
-   `herdr-app do browser.agent_access --on true` and a mod's `run()` are
-   refused, because an agent can reach both. Turning it off works from
-   anywhere (the header's **Stop agent**, or
-   `herdr-app do browser.agent_access --browser b1 --on false`). Access is
-   never saved; closing the browser or quitting turns it off. While any
-   browser has access on, a strip along the bottom of the window names it,
-   with its own **Stop agent**. Herdr draws the header and the strip from the
-   open browser, not the layout, so hiding or editing a block, or switching
-   tab or space, doesn't hide them.
-3. In a terminal Herdr started (any agent pane), `agent-browser snapshot -i`,
-   `agent-browser click @e5`, `agent-browser fill @e2 "Ada"`. The header
-   names the terminal that last attached, as it claimed itself.
+1. `herdr-app do browser.open --url http://127.0.0.1:8765/browser-fixture.html`.
+2. In a terminal Herdr started (any agent pane), `agent-browser snapshot -i`,
+   `agent-browser click @e5`, `agent-browser fill @e2 "Ada"`.
 
 Terminals that started before this Herdr (from another Herdr build, before
 you switched to this one) have none of these variables, and a running
@@ -270,8 +221,8 @@ for `Browser.getWindowForTarget` (the native window's bounds), which stays
 refused; agent-browser carries on without it. (0.39.1 has no "iPhone 15 Pro"
 device; it says so itself.) The proxy refuses any upgrade with an `Origin` header or a
 `Host` other than `127.0.0.1:<port>` or `localhost:<port>`, and answers
-anything but an upgrade with a bare 404. Turning access off, a
-new attach for the same page, closing the browser and quitting end the
+anything but an upgrade with a bare 404. A new attach
+for the same page, closing the browser and quitting end the
 token and the connection: Herdr shuts the socket itself, so an agent that
 stopped reading can't hold it open. A connection's own end (the agent
 closed it, a write it didn't take in 5 s, or more than 1024 messages or
@@ -279,8 +230,7 @@ closed it, a write it didn't take in 5 s, or more than 1024 messages or
 for a new one. Whenever a connection ends, the page reopens at its url so
 nothing the agent set (headers, overrides) stays. The reopen keeps the
 profile's storage (cookies, local storage).
-Every on, off and attach is a line in the app's log (closing or quitting
-logs the off even if no agent attached), never the token or port. The log
+Every attach is a line in the app's log, never the token or port. The log
 is the app's stderr: `just browser-dev` keeps it in `/tmp/hbd.dev/app.log`, a
 file any process running as you can edit, and an app opened from Finder
 keeps none.
@@ -303,12 +253,12 @@ Herdr's terminals set `AGENT_BROWSER_IDLE_TIMEOUT_MS=300000`, so a daemon
 whose agent stopped sending commands exits after 5 minutes (agent-browser's
 default is 60), which ends its connection and its token; input sent
 through the stream server also counts as activity and keeps the daemon
-alive. Turning access off ends the connection at once.
+alive.
 
 agent-browser hides a provider's error text (`Plugin 'herdr' returned
 success=false`); `agent-browser plugin run herdr herdr.check` says why
-(for example `agent access is off for b1: ask the person to turn on agent
-access for b1`). Terminals started before this build, or by `hc run`, don't
+(for example `no browser in this space: open one with: herdr-app do
+browser.open --url <url>`). Terminals started before this build, or by `hc run`, don't
 have the environment; `AGENT_BROWSER_PROVIDER=` opts a terminal out.
 agent-browser's daemon reads the provider's environment once, when its
 session starts, so to pick another browser run
@@ -318,32 +268,23 @@ before the next agent-browser command.
 What this does and doesn't protect (state this wherever the prototype is
 shown):
 
-> Agent access is a consent switch for a cooperating agent, not a security
-> boundary against software running as you. Only a person answering
-> **Allow** in a native macOS dialog turns it on. A process running as you
-> could still answer that dialog if it has macOS Accessibility permission
-> (or runs under an app that has it), and any app can open its own window
-> over the dialog without any permission, to relabel its buttons. While
-> access is on, any process running as your user can get the page's CDP
-> token through Herdr's control socket and act as you on any http or https
-> site it points that pane at: run script in the page (which reads its
-> non-HttpOnly cookies), click, type, and read what the page shows. Any
-> process running as you can also read this profile's cookies from disk,
-> because the prototype encrypts them with Chromium's public test key
-> (`--use-mock-keychain`). It can also hide or recolor the in-window access
-> marker (the pane header and the bottom strip) with a mod, a theme or a
-> layout; those are information, not the control. Herdr's own agent
-> connection needs a 256-bit token and accepts only loopback connections
-> without an `Origin` header. But while an agent-browser session is
-> attached, agent-browser's own stream server (a loopback websocket with no
-> token, in agent-browser's code, not Herdr's) lets any user on this
-> machine, and any page served from `localhost` or opened from a file in
-> any browser, watch the pane and click and type in it. Every local Herdr
-> terminal points agent-browser at Herdr, so any agent-browser run there (a
-> project's test suite included) can drive a pane with access on;
-> `AGENT_BROWSER_PROVIDER=` opts a terminal out. Turning access off,
-> closing the browser, or quitting ends both. Use this browser only with
-> test accounts, never your own.
+> There is no consent switch. Any process running as your user can ask
+> Herdr's control socket for a page's CDP token and then act as you on any
+> http or https site that pane is pointed at: run script in the page (which
+> reads its non-HttpOnly cookies), click, type, and read what the page
+> shows. Any process running as you can also read the profile's cookies
+> from disk, because the prototype encrypts them with Chromium's public
+> test key (`--use-mock-keychain`). Herdr's own agent connection needs a
+> 256-bit token and accepts only loopback connections without an `Origin`
+> header. But while an agent-browser session is attached, agent-browser's
+> own stream server (a loopback websocket with no token, in agent-browser's
+> code, not Herdr's) lets any user on this machine, and any page served
+> from `localhost` or opened from a file in any browser, watch the pane and
+> click and type in it. Every local Herdr terminal points agent-browser at
+> Herdr, so any agent-browser run there (a project's test suite included)
+> can drive a pane; `AGENT_BROWSER_PROVIDER=` opts a terminal out. Closing
+> the browser or quitting ends the token. Keep sign-ins you can't lose out
+> of a pane an agent can reach.
 
 Signing: the dev bundle is ad hoc signed without the hardened runtime, so
 library validation is off (`DYLD_INSERT_LIBRARIES` works on the browser
@@ -351,30 +292,9 @@ process at its next launch, same user only), and Chromium logs a failed
 signature check of its own process (`process_requirement.cc … -67030`);
 whether Chromium then skips checks between its processes is unverified.
 
-### Dev-only switch (automated tests only)
-
-A build with the switch drops the consent property: an agent that can
-relaunch the app (`herdr-app do app.quit`, then the app with the variable
-set) can turn its own access on. So only an explicit test build has it:
-`scripts/browser-dev-bundle --dev-agent-access` builds a debug bundle with
-the `dev-agent-access` Cargo feature. `just browser-dev` and
-`just browser-build` leave it out, and release builds ignore it (the code is
-behind `debug_assertions` and the feature; the test
-`builds_without_the_dev_feature_have_no_dev_switch` pins it).
-
-Started with `HERDR_DEV_AGENT_ACCESS=1` in its own environment, such a
-build lets `herdr-app do browser.agent_access --on true` turn access on, so
-an agent can test the whole path without a person's click. It is read once
-at launch and removed from the environment (terminals never inherit it),
-logged as `DEV SWITCH ON` at startup and on every use, and every agent
-header and the window's agent strip say "DEV SWITCH: the control socket can
-turn agent access on". Show the prototype on a bundle without it
-(`just browser-dev --release`).
-
 ## Known gaps
 
-The main ones are in [browser-prototype.md](browser-prototype.md#known-gaps).
-Smaller ones:
+Known ones:
 
 - **Takeover's first call fails.** When a second agent attaches to the same
   page, the first agent's connection ends and the page reopens; the new
@@ -398,8 +318,7 @@ Smaller ones:
   any site only with an Apple-managed entitlement
   (`com.apple.developer.web-browser.public-key-credential`) that Herdr's
   team would request. Without it, WebAuthn refuses at once; measured on
-  macOS 27.2 with dev builds, `http://127.0.0.1` pages, person and agent
-  profiles (`scripts/browser-passkey-probe.html` writes them into its title;
+  macOS 27.2 with dev builds, `http://127.0.0.1` pages (`scripts/browser-passkey-probe.html` writes them into its title;
   `?get` adds a timed `get`):
   - CEF starts with `--disable-blink-features=WebAuth`
     (`LIST_SWITCHES` in `src/browser/runtime.rs`): pages have no
@@ -407,8 +326,7 @@ Smaller ones:
     `navigator.credentials.get` rejects in under 25 ms. Without the switch
     CEF said conditional mediation was available, and a passkey request
     would run with no dialog (CEF in a native parent view has no dialog
-    host) until the site's timeout. The switch is process-wide, so it covers
-    agent-profile pages too.
+    host) until the site's timeout. The switch is process-wide.
 
   `browser.open_external` (the bar's open-in-browser button, shown on
   hover) opens the page in the default browser, where passkeys work. It
@@ -416,8 +334,5 @@ Smaller ones:
   can call it too; that gives them nothing new, since a Herdr terminal can
   already run `open <url>`.
 
-  Refusing passkeys on agent-profile pages, once they work, belongs in a
-  native WebAuthn bridge, where Herdr's own code decides before any sheet
-  shows. A script in the page can't do it: an agent's `eval` runs in that
-  page and could undo it. Until the bridge exists, nothing can raise a
-  passkey sheet (above).
+  Until a native WebAuthn bridge exists, nothing can raise a passkey sheet
+  (above).

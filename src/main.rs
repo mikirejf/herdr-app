@@ -75,10 +75,6 @@ fn attach_console() {
 }
 
 fn main() {
-    // Debug builds: the dev-only agent-access switch is read and removed from
-    // the environment before anything else (terminals never inherit it).
-    #[cfg(all(target_os = "macos", feature = "browser"))]
-    browser::read_dev_switch();
     let args: Vec<String> = std::env::args().collect();
     // agent-browser's plugin: answers on stdout and exits. No window, no CEF.
     #[cfg(all(target_os = "macos", feature = "browser"))]
@@ -120,12 +116,6 @@ fn main() {
                 .unwrap_or_else(|_| "warn,herdr_app=info,gpui_shell=info".into()),
         )
         .init();
-    #[cfg(all(target_os = "macos", feature = "browser", debug_assertions, feature = "dev-agent-access"))]
-    if browser::dev_switch() {
-        tracing::warn!(
-            "DEV SWITCH ON (debug build with the dev-agent-access feature, set at launch): the control socket can turn agent access on, so the person's click is not the only way in. For automated tests only; `just browser-dev` and release builds don't have it."
-        );
-    }
 
     if update::apply_on_startup() {
         return;

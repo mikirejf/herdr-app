@@ -20,15 +20,13 @@ pub enum Content {
     /// A web page (macOS builds with a browser engine; a placeholder
     /// elsewhere). `browser` is the app's id for it (`b1`); `url` is where it
     /// was last, so a block whose browser isn't open (a restart, another
-    /// screen) opens there again. `profile: "agent"`: a separate profile for
-    /// test accounts; only such a browser can be driven by an agent.
-    /// Saved as a mod block named [`BROWSER_MOD`], so a herdr-app without
+    /// screen) opens there again. Saved as a mod block named [`BROWSER_MOD`], so a herdr-app without
     /// this prototype shows that one pane as a mod that didn't load and keeps it.
-    Browser { browser: String, url: String, profile: Option<String> },
+    Browser { browser: String, url: String },
 }
 
 /// The mod name a browser block is saved under: `{ "mod": "browser-prototype",
-/// "props": { "browser": "b1", "url": "…", "profile"?: "agent" } }`. A mod
+/// "props": { "browser": "b1", "url": "…" } }`. A mod
 /// block by this name whose props name a browser is a browser, not a mod.
 /// Not `browser`: Herdr's own browser mod will likely take that name, and
 /// neither should read the other's blocks.
@@ -68,8 +66,6 @@ struct BrowserProps {
     browser: String,
     #[serde(default)]
     url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    profile: Option<String>,
 }
 
 impl From<Saved> for Content {
@@ -77,7 +73,7 @@ impl From<Saved> for Content {
         match saved {
             Saved::Terminal { terminal } => Content::Terminal { terminal },
             Saved::Mod { name, props } => match browser_props(&name, &props) {
-                Some(BrowserProps { browser, url, profile }) => Content::Browser { browser, url, profile },
+                Some(BrowserProps { browser, url }) => Content::Browser { browser, url },
                 None => Content::Mod { name, props },
             },
             Saved::Context { tab, pane } => Content::Context { tab, pane },
@@ -93,10 +89,10 @@ impl From<Content> for Saved {
             Content::Mod { name, props } => Saved::Mod { name, props },
             Content::Context { tab, pane } => Saved::Context { tab, pane },
             Content::Agent { agent } => Saved::Agent { agent },
-            Content::Browser { browser, url, profile } => Saved::Mod {
+            Content::Browser { browser, url } => Saved::Mod {
                 name: BROWSER_MOD.to_string(),
                 // A struct of strings always converts.
-                props: serde_json::to_value(BrowserProps { browser, url, profile }).unwrap_or_default(),
+                props: serde_json::to_value(BrowserProps { browser, url }).unwrap_or_default(),
             },
         }
     }
@@ -919,27 +915,38 @@ mod tests {
     fn browser_blocks_round_trip_as_panes() {
         let json = r#"{ "id": "p1", "type": "block", "content": { "mod": "browser-prototype", "props": { "browser": "b1", "url": "https://example.com/" } } }"#;
         let n: Node = serde_json::from_str(json).unwrap();
-        assert_eq!(n.content(), Some(&Content::Browser { browser: "b1".into(), url: "https://example.com/".into(), profile: None }));
+        assert_eq!(n.content(), Some(&Content::Browser { browser: "b1".into(), url: "https://example.com/".into() }));
         assert!(n.is_pane());
         assert_eq!(n.browser(), Some("b1"));
         let back: Node = serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
         assert_eq!(back, n);
         // A block saved without a url still parses (it opens on a blank page).
         let bare: Node = serde_json::from_str(r#"{ "id": "p2", "type": "block", "content": { "mod": "browser-prototype", "props": { "browser": "b2" } } }"#).unwrap();
-        assert_eq!(bare.content(), Some(&Content::Browser { browser: "b2".into(), url: String::new(), profile: None }));
+        assert_eq!(bare.content(), Some(&Content::Browser { browser: "b2".into(), url: String::new() }));
         // The other kinds still parse as themselves.
         let t: Node = serde_json::from_str(r#"{ "id": "t", "type": "block", "content": { "terminal": "x" } }"#).unwrap();
         assert_eq!(t.terminal(), Some("x"));
     }
 
     #[test]
+    fn a_browser_block_saved_with_an_agent_profile_still_loads_and_drops_the_prop() {
+        let json = r#"{ "id": "p1", "type": "block", "content": { "mod": "browser-prototype", "props": { "browser": "b1", "url": "https://example.com/", "profile": "agent" } } }"#;
+        let n: Node = serde_json::from_str(json).unwrap();
+        assert_eq!(n.content(), Some(&Content::Browser { browser: "b1".into(), url: "https://example.com/".into() }));
+        assert_eq!(
+            serde_json::to_value(&n).unwrap()["content"],
+            serde_json::json!({ "mod": "browser-prototype", "props": { "browser": "b1", "url": "https://example.com/" } })
+        );
+    }
+
+    #[test]
     fn browser_blocks_are_saved_under_a_name_herdr_s_own_browser_mod_wont_use() {
-        let n = Node::block("p1", Content::Browser { browser: "b1".into(), url: "https://example.com/".into(), profile: Some("agent".into()) });
+        let n = Node::block("p1", Content::Browser { browser: "b1".into(), url: "https://example.com/".into() });
         let saved = serde_json::to_value(&n).unwrap();
         // The shape a herdr-app without this prototype reads as one mod pane.
         assert_eq!(
             saved["content"],
-            serde_json::json!({ "mod": "browser-prototype", "props": { "browser": "b1", "url": "https://example.com/", "profile": "agent" } })
+            serde_json::json!({ "mod": "browser-prototype", "props": { "browser": "b1", "url": "https://example.com/" } })
         );
         assert_eq!(serde_json::from_value::<Node>(saved).unwrap(), n);
         // A `browser` mod block, however its props look, is a mod: a

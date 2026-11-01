@@ -25,14 +25,6 @@
 <p>Right-click: <b id="menu-result">not yet</b></p>
 <p>Typed: <b id="typed">nothing</b></p>
 
-<!-- Posts a console line straight to Herdr's relay handler from inside an
-     iframe. The agent's console must not show it. -->
-<iframe srcdoc="<script>
-  const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.herdrConsole;
-  if (h) h.postMessage(JSON.stringify({ t: 'log', a: ['FORGED by an iframe'] }));
-  document.write(h ? 'iframe posted a forged console line' : 'no relay handler in this iframe');
-</script>"></iframe>
-
 <script>
   const src = document.getElementById("src"), dst = document.getElementById("dst");
   src.addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", "herdr"));

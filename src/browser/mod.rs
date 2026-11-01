@@ -5,7 +5,7 @@
 //! view over GPUI's Metal view, kept on its block's bounds every frame
 //! (native.rs, view.rs). The engine is CEF in windowed mode (runtime.rs, `engine`),
 //! Chromium shipped in the bundle; the rest is the registry, key routing,
-//! overlay cover, consent, the agents' token proxy and allowlist.
+//! overlay cover, the agents' token proxy and allowlist.
 //! Every other build has the same API with no browser behind it: blocks show
 //! a placeholder and the commands say what's missing (off.rs). The window
 //! only talks to `Browsers`.
@@ -27,8 +27,6 @@ pub mod keys;
 pub mod registry;
 
 #[cfg(all(target_os = "macos", feature = "browser"))]
-mod confirm;
-#[cfg(all(target_os = "macos", feature = "browser"))]
 mod native;
 #[cfg(all(target_os = "macos", feature = "browser"))]
 mod proxy;
@@ -45,20 +43,6 @@ pub use native::{Browsers, Event};
 mod off;
 #[cfg(not(all(target_os = "macos", feature = "browser")))]
 pub use off::{Browsers, Event};
-
-/// Shows `ask` as an app-modal macOS alert and waits for the person's
-/// answer (`confirm::ask`). Call it from a foreground task, never while
-/// the window or app is borrowed: AppKit runs a modal loop inside it.
-#[cfg(all(target_os = "macos", feature = "browser"))]
-pub fn confirm(ask: &Ask) -> Reply {
-    confirm::ask(ask)
-}
-
-/// No browser here, so no dialog: nothing turns access on.
-#[cfg(not(all(target_os = "macos", feature = "browser")))]
-pub fn confirm(_: &Ask) -> Reply {
-    Reply { answer: Answer::Closed, after: std::time::Duration::ZERO, app_active: false }
-}
 
 /// What the window does after a browser reported something.
 #[derive(Debug, Default)]
@@ -191,153 +175,10 @@ pub fn may_focus(page: &str, wanted: Option<Option<&str>>, pressed: bool) -> boo
 }
 
 
-// ---- agent access: what the window needs in every build (rules: agent.rs)
-
-/// Where a change to agent access came from (and the audit log's `by=`).
-#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Source {
-    /// The person answered Allow in the native macOS dialog that the pane
-    /// header's "Allow agent" opens: the one source that turns access on.
-    NativeConfirm,
-    /// Herdr's own Stop buttons (the pane header, the window's strip).
-    PaneControl,
-    /// `herdr-app do` over the control socket: agents can reach it.
-    Socket,
-    /// A mod's `run()` (and keys.json bindings, the native key monitor): agents write mods and keys.
-    Mod,
-    /// The dev-only switch (debug builds with the `dev-agent-access` feature,
-    /// `HERDR_DEV_AGENT_ACCESS=1` at launch).
-    DevSwitch,
-    Close,
-    Quit,
-}
-
-#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
-impl Source {
-    pub fn label(self) -> &'static str {
-        match self {
-            Source::NativeConfirm => "native confirm",
-            Source::PaneControl => "pane control",
-            Source::Socket => "socket",
-            Source::Mod => "mod or key",
-            #[cfg(all(debug_assertions, feature = "dev-agent-access"))]
-            Source::DevSwitch => "socket (dev switch, dev-agent-access build)",
-            // Never set in builds without the dev feature.
-            #[cfg(not(all(debug_assertions, feature = "dev-agent-access")))]
-            Source::DevSwitch => "socket",
-            Source::Close => "close",
-            Source::Quit => "quit",
-        }
-    }
-}
-
-/// The audit log line for an agent access change. A browser id can be
-/// agent text (a layout block's `browser`), so it is escaped (`log_safe`):
-/// an id can't add a line of its own.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
-pub fn access_line(on: bool, browser: &str, by: Source) -> String {
-    format!("browser: agent access {} browser={} by={}", if on { "on" } else { "off" }, log_safe(browser), by.label())
-}
-
-/// The access button in an agent browser's header: its label and what a
-/// click asks for, both from the state it was painted with. The click acts
-/// on what the person saw: a "Stop agent" still on screen after a change it
-/// never showed (the socket turned access off) means off. Toggling the live
-/// state instead would turn access back on. "Allow agent…" only opens the
-/// native dialog (`Browsers::ask`); access turns on only from its answer.
-pub fn access_button(shown_on: bool) -> (&'static str, bool) {
-    if shown_on { ("Stop agent", false) } else { ("Allow agent…", true) }
-}
-
-#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
-/// How long the native dialog's Allow stays disabled after it shows, and
-/// the least time between showing and an Allow that counts: a double click
-/// whose first click opened the dialog can't land its second on Allow.
-/// Chromium waits the same 500 ms before its permission prompts take a click
-/// (`InputEventActivationProtector`).
-pub const ALLOW_AFTER: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// A native "Let agents drive this browser?" dialog about to show
-/// (`Browsers::ask`), and what it names.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
-#[derive(Clone, Debug)]
-pub struct Ask {
-    pub browser: String,
-    /// `scheme://host[:port]` of the page when the dialog opened.
-    pub site: String,
-    pub title: String,
-    pub body: String,
-}
-
-/// Which button closed the dialog.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Answer {
-    /// "Allow" (no key equivalent).
-    Allow,
-    /// "Cancel": the default button, so Return and Esc too.
-    Cancel,
-    /// Anything else: the dialog went away without a button.
-    Closed,
-}
-
-/// What came back from the dialog.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
-#[derive(Clone, Copy, Debug)]
-pub struct Reply {
-    pub answer: Answer,
-    /// How long it was up.
-    pub after: std::time::Duration,
-    /// Herdr was the active app when it was answered.
-    pub app_active: bool,
-}
-
-#[cfg(all(debug_assertions, feature = "dev-agent-access"))]
-static DEV_SWITCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// What every agent header and the window's agent strip say while the dev
-/// switch is on: the person's click is no longer the only way in. Builds
-/// without the dev feature carry no such text.
-pub fn dev_switch_note() -> Option<&'static str> {
-    #[cfg(all(debug_assertions, feature = "dev-agent-access"))]
-    if dev_switch() {
-        return Some("DEV SWITCH: the control socket can turn agent access on");
-    }
-    None
-}
-
-/// Debug builds with the `dev-agent-access` feature only:
-/// `HERDR_DEV_AGENT_ACCESS=1` in the app's own environment at launch lets
-/// the control socket turn agent access on, so an agent can test the path
-/// end to end without a person's click. That drops the consent property, so
-/// the dev bundle people run (`just browser-dev`) is built without it. Read
-/// once at startup and removed from the environment, so terminals never
-/// inherit it. Other builds compile none of this: the variable means nothing.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
-pub fn read_dev_switch() {
-    #[cfg(all(debug_assertions, feature = "dev-agent-access"))]
-    {
-        const NAME: &str = "HERDR_DEV_AGENT_ACCESS";
-        let on = std::env::var(NAME).is_ok_and(|v| v == "1");
-        // SAFETY: called first thing in main, before any other thread exists.
-        unsafe { std::env::remove_var(NAME) };
-        DEV_SWITCH.store(on, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-pub fn dev_switch() -> bool {
-    #[cfg(all(debug_assertions, feature = "dev-agent-access"))]
-    return DEV_SWITCH.load(std::sync::atomic::Ordering::SeqCst);
-    #[cfg(not(all(debug_assertions, feature = "dev-agent-access")))]
-    false
-}
-
-/// The url without its userinfo, query and fragment, wherever a url leaves
-/// the app for a browser agents can't drive (`herdr-app ls`, mods'
-/// `browsers()`, the status of a block whose browser isn't open), and in
-/// logs: OAuth codes, magic links and passwords stay out of reach. The tab
-/// document keeps the whole url (restore needs it).
+/// The url without its userinfo, query and fragment, for the status of a
+/// block whose browser isn't open and for logs: OAuth codes, magic links and
+/// passwords stay out of them. The tab document keeps the whole url
+/// (restore needs it).
 pub fn public_url(url: &str) -> String {
     let url = url.split(['?', '#']).next().unwrap_or_default();
     match url.split_once("://") {
@@ -350,108 +191,8 @@ pub fn public_url(url: &str) -> String {
     }
 }
 
-/// A page's title wherever its url goes out as `public_url`. Chromium titles
-/// a page that has none with its url ("127.0.0.1:8765/cb?code=…", no scheme
-/// or userinfo, maybe unescaped, the host maybe in Unicode), so a title
-/// that starts with the page's host, ends its head with the page's path
-/// (as is or unescaped), or reads as a url (a host with a `.` or `:`, then
-/// `/`, then `?` or `#`, and no space before those) is cut the same way.
-/// Then, whatever the title looks like, the url's query, fragment and
-/// userinfo come out of it, matched as they are and unescaped: the shape
-/// tests miss a Unicode host with a space in the path.
-/// Other titles pass.
-#[cfg_attr(not(all(target_os = "macos", feature = "browser")), allow(dead_code))]
-pub fn public_title(title: &str, url: &str) -> String {
-    without_url_secrets(&url_title_cut(title, url), url)
-}
-
-fn url_title_cut(title: &str, url: &str) -> String {
-    let (before, query) = url.split_once('?').map_or((url, ""), |(b, q)| (b, q.split('#').next().unwrap_or_default()));
-    let public = public_url(before);
-    let (host, path) = public
-        .split_once("://")
-        .map(|(_, rest)| {
-            let (host, path) = rest.split_at(rest.find(['/', '\\']).unwrap_or(rest.len()));
-            (host.to_ascii_lowercase(), path)
-        })
-        .unwrap_or_default();
-    let shown = title.trim_start();
-    let shown = shown.split_once("://").filter(|(scheme, _)| !scheme.contains([' ', '/'])).map_or(shown, |(_, rest)| rest);
-    let shown = shown.split_once('@').filter(|(user, _)| !user.contains(['/', ' '])).map_or(shown, |(_, rest)| rest).to_ascii_lowercase();
-    let hosts = [host.as_str(), host.strip_prefix("www.").unwrap_or_default()];
-    let carries_query = !query.is_empty() && title.contains(query);
-    let head = shown.split(['?', '#']).next().unwrap_or_default();
-    let hostish = head.split_once('/').is_some_and(|(host, _)| host.contains(['.', ':']));
-    let reads_as_url = head.len() < shown.len() && hostish && !head.contains(char::is_whitespace);
-    // The page's path after a host-shaped head, as Chromium shows it (a
-    // Unicode host, `%20` as a space): the url, whatever its host looks like.
-    let has_path = path.len() > 1 && hostish && [path.to_ascii_lowercase(), unescape(path).to_lowercase()].iter().any(|p| head.ends_with(p.as_str()));
-    if !carries_query && !reads_as_url && !has_path && !hosts.iter().any(|h| !h.is_empty() && shown.starts_with(h)) {
-        return title.to_owned();
-    }
-    let title = if carries_query { title.replace(query, "") } else { title.to_owned() };
-    let cut = title.split(['?', '#']).next().unwrap_or_default();
-    match cut.split_once('@') {
-        Some((user, rest)) if !user.contains(['/', ' ']) => rest.to_owned(),
-        _ => cut.to_owned(),
-    }
-}
-
-/// `title` with the url's query, fragment, `userinfo@` and password taken
-/// out, each matched as it is in the url and unescaped (Chromium shows a
-/// url's `%20` as a space), then any `?`, `#`, `&` or `=` left dangling
-/// at its end. A title that carries none of them passes as it is.
-fn without_url_secrets(title: &str, url: &str) -> String {
-    let (pre, fragment) = url.split_once('#').unwrap_or((url, ""));
-    let query = pre.split_once('?').map_or("", |(_, q)| q);
-    let authority = pre.split_once("://").map_or("", |(_, rest)| rest.split(['/', '\\', '?']).next().unwrap_or_default());
-    let userinfo = authority.rsplit_once('@').map_or(String::new(), |(u, _)| format!("{u}@"));
-    let password = userinfo.trim_end_matches('@').split_once(':').map_or("", |(_, p)| p);
-    let secrets: Vec<&str> = [query, fragment, userinfo.as_str(), password].into_iter().filter(|s| !s.is_empty()).collect();
-    let mut out = title.to_owned();
-    let mut found = false;
-    for s in &secrets {
-        if out.contains(s) {
-            out = out.replace(s, "");
-            found = true;
-        }
-    }
-    let unescaped: Vec<String> = secrets.iter().map(|s| unescape(s)).filter(|s| !s.is_empty()).collect();
-    if unescaped.iter().any(|s| unescape(&out).contains(s.as_str())) {
-        out = unescape(&out);
-        for s in &unescaped {
-            out = out.replace(s.as_str(), "");
-        }
-        found = true;
-    }
-    if found { out.trim_end_matches(['?', '#', '&', '=']).to_owned() } else { out }
-}
-
-/// `%XX` escapes decoded (invalid UTF-8 as U+FFFD); `+` stays a `+`, as
-/// in Chromium's display of a url.
-fn unescape(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = |b: u8| (b as char).to_digit(16);
-        match (bytes[i], bytes.get(i + 1).copied().and_then(hex), bytes.get(i + 2).copied().and_then(hex)) {
-            (b'%', Some(h), Some(l)) => {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-            }
-            (b, _, _) => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// Text from outside Herdr (an agent's CDP method name, a url it asked for,
-/// a key binding's action, a site the consent dialog names) as a log line or
-/// the dialog may carry it: control characters, line and paragraph
+/// a key binding's action) as a log line may carry it: control characters, line and paragraph
 /// separators, bidi controls and invisible format characters escaped
 /// (`\n`, `\u{202e}`, `\u{200b}`), so it can't start a line of its own,
 /// reorder one, or hide text in one; at most 200 characters.
@@ -566,7 +307,7 @@ pub const AVAILABLE: bool = cfg!(all(target_os = "macos", feature = "browser"));
 
 #[cfg(test)]
 mod tests {
-    use super::{Hand, Rect, Responder, Source, access_line, covered, hand, keyboard_page, log_escaped, log_safe, may_focus, public_title, public_url};
+    use super::{Hand, Rect, Responder, covered, hand, keyboard_page, log_escaped, log_safe, may_focus, public_url};
 
     #[test]
     fn public_urls_have_no_userinfo_query_or_fragment() {
@@ -575,48 +316,6 @@ mod tests {
         assert_eq!(public_url("http://127.0.0.1:8765/x.html"), "http://127.0.0.1:8765/x.html");
         assert_eq!(public_url("https://a.test/p@q?x=1"), "https://a.test/p@q");
         assert_eq!(public_url("about:blank"), "about:blank");
-    }
-
-    #[test]
-    fn a_title_that_is_the_url_goes_out_as_the_url_does() {
-        // Chromium's title for a page with no <title>: the url with no scheme.
-        let url = "http://127.0.0.1:18766/notitle.html?code=SECRETQ2#frag";
-        assert_eq!(public_title("127.0.0.1:18766/notitle.html?code=SECRETQ2", url), "127.0.0.1:18766/notitle.html");
-        assert_eq!(public_title("http://127.0.0.1:18766/notitle.html?code=SECRETQ2", url), "http://127.0.0.1:18766/notitle.html");
-        assert_eq!(public_title("user:pw@127.0.0.1:18766/notitle.html?code=SECRETQ2", "http://user:pw@127.0.0.1:18766/notitle.html?code=SECRETQ2"), "127.0.0.1:18766/notitle.html");
-        assert_eq!(public_title("example.test/cb?code=1", "https://www.example.test/cb?code=1"), "example.test/cb");
-        assert_eq!(public_title("EXAMPLE.test/cb#t=1", "https://example.test/cb#t=1"), "EXAMPLE.test/cb");
-        // A title that carries the query, however it starts.
-        assert_eq!(public_title("Signed in: code=SECRETQ3", "https://a.test/cb?code=SECRETQ3"), "Signed in: ");
-        assert!(!public_title("x ?code=SECRETQ3", "https://a.test/cb?code=SECRETQ3").contains("SECRET"));
-        // A Unicode host and an unescaped query: the host and query differ
-        // from the url's, but the title still reads as a url.
-        let idn = "http://xn--bcher-kva.localhost:18791/notitle.html?code=SECRET%20C1#fragSECRET";
-        assert_eq!(public_title("bücher.localhost:18791/notitle.html?code=SECRET C1", idn), "bücher.localhost:18791/notitle.html");
-        assert_eq!(public_title(" bücher.localhost:18791/notitle.html?code=SECRETH1é", idn), " bücher.localhost:18791/notitle.html");
-        assert_eq!(public_title("bücher.localhost:18791/notitle.html#fragSECRET", idn), "bücher.localhost:18791/notitle.html");
-        // Seen live: a Unicode host and a space in the path.
-        // The host prefix (punycode), the raw query (`%20`) and the
-        // no-whitespace url shape all missed at once.
-        let b4 = concat!("http://me:", "p", "w", "@xn--bcher-kva.localhost:18795/no%20title.html?code=SECRET%20Q3#fragSECRET");
-        assert_eq!(public_title("bücher.localhost:18795/no title.html?code=SECRET Q3#fragSECRET", b4), "bücher.localhost:18795/no title.html");
-        assert_eq!(public_title("bücher.localhost:18795/no title.html#fragSECRET", b4), "bücher.localhost:18795/no title.html");
-        // A title cut short (Chromium caps titles): the head still reads as the url.
-        assert_eq!(public_title("bücher.localhost:18795/no title.html?code=SEC", b4), "bücher.localhost:18795/no title.html");
-        // Whatever the title looks like, the query, fragment and userinfo come out.
-        for t in ["Done: code=SECRET Q3", "Done: code=SECRET%20Q3", "x fragSECRET y", "as me:pw@ here", "pw"] {
-            let out = public_title(t, b4);
-            assert!(!out.contains("SECRET") && !out.contains("pw"), "{t:?} → {out:?}");
-        }
-        // Control: a Unicode host with no space and no query passes as the url it is.
-        let plain = "http://xn--bcher-kva.localhost:18795/notitle.html";
-        assert_eq!(public_title("bücher.localhost:18795/notitle.html", plain), "bücher.localhost:18795/notitle.html");
-        // A page's own title passes, question marks and all.
-        assert_eq!(public_title("What is a pane? · Docs", "https://docs.test/panes?x=1"), "What is a pane? · Docs");
-        assert_eq!(public_title("Herdr fixture", "http://127.0.0.1:8765/browser-fixture.html"), "Herdr fixture");
-        assert_eq!(public_title("Input/output? A primer", "https://docs.test/io?x=1"), "Input/output? A primer");
-        assert_eq!(public_title("C# in 10 minutes", "https://docs.test/cs"), "C# in 10 minutes");
-        assert_eq!(public_title("", "about:blank"), "");
     }
 
     #[test]
@@ -634,19 +333,9 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_written_browser_id_cannot_forge_an_access_line() {
-        // A person-profile layout block may carry any id; its "off" is logged.
-        let forged = "x by=close\nbrowser: agent access on browser=b1 by=native confirm";
-        let line = access_line(false, forged, Source::Socket);
-        assert!(!line.contains('\n'), "{line}");
-        assert!(line.ends_with(" by=socket"), "{line}");
-        assert_eq!(access_line(true, "b1", Source::NativeConfirm), "browser: agent access on browser=b1 by=native confirm");
-    }
-
-    #[test]
     fn a_failed_command_quoting_an_agent_id_is_logged_on_one_line() {
         // `browser.close` on a layout block quotes the block's id in its error.
-        let id = format!("x\u{2028}{}\nbrowser: agent access on browser=b1 by=native confirm", "y".repeat(300));
+        let id = format!("x\u{2028}{}\nbrowser: agent attach browser=b1 terminal=t1", "y".repeat(300));
         let error = format!("browser {id} is a block of the shown layout");
         let line = log_escaped(&error);
         assert!(!line.contains('\n') && !line.contains('\u{2028}'), "{line}");
@@ -656,7 +345,7 @@ mod tests {
     #[test]
     fn a_page_holding_the_keyboard_is_logged_escaped() {
         // The keyboard lines log the holder through `Display`.
-        let forged = Responder::Page("x\nbrowser: agent access on browser=b1 by=native confirm".into());
+        let forged = Responder::Page("x\nbrowser: agent attach browser=b1 terminal=t1".into());
         let shown = forged.to_string();
         assert!(!shown.contains('\n'), "{shown}");
         assert_eq!(Responder::Page("b1".into()).to_string(), "b1");

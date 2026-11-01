@@ -564,7 +564,7 @@ pub struct Snapshot {
     pub agents: Value,
     /// Every pane: { pane, terminal, tab, title, cwd, branch, status, app, focused, zoomed }.
     pub panes: Value,
-    /// Every open browser: { browser, url, title, loading, can_go_back, can_go_forward, space, pane, agent_access, focused }.
+    /// Every open browser: { browser, url, title, loading, can_go_back, can_go_forward, space, pane, focused }.
     pub browsers: Value,
     pub terminals: Value,
     pub focused: Value,

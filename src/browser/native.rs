@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use super::agent::{self, Caller, Candidate};
 use super::registry::{self, Page, Registry};
-use super::{Hand, Look, Responder, Source, Update, emulate, engine, proxy, view};
+use super::{Hand, Look, Responder, Update, emulate, engine, proxy, view};
 use crate::layout::Node;
 use crate::model::Model;
 
@@ -32,15 +32,13 @@ pub struct Browsers {
     holder: Option<Responder>,
     /// Why CEF can't run, shown in every browser block.
     error: Option<String>,
-    /// The browser a native agent-access dialog is open for.
-    asking: Option<String>,
 }
 
 impl Browsers {
     pub fn new() -> Self {
         let (tx, rx) = async_channel::unbounded();
         engine::set_events(tx);
-        Browsers { registry: Registry::default(), events: Some(rx), wanted: None, holder: None, error: None, asking: None }
+        Browsers { registry: Registry::default(), events: Some(rx), wanted: None, holder: None, error: None }
     }
 
     pub fn events(&mut self) -> Option<async_channel::Receiver<Event>> {
@@ -88,10 +86,7 @@ impl Browsers {
     pub fn reconcile(&mut self, model: &Model, chrome: &Node, window: &mut Window, cx: &mut App) {
         let changes = self.registry.reconcile(&registry::blocks(model, chrome));
         for id in &changes.close {
-            // Access on with no agent yet is logged off too.
-            if proxy::close(id) {
-                tracing::info!("{}", super::access_line(false, id, Source::Close));
-            }
+            proxy::revoke(id);
             engine::close(id);
             view::remove(id);
         }
@@ -104,9 +99,8 @@ impl Browsers {
             return;
         }
         for (id, url) in changes.open {
-            let agent_profile = self.registry.get(&id).is_some_and(|e| e.agent_profile);
             match view::container(&id, window) {
-                Ok(parent) => engine::open(&id, parent, url, agent_profile),
+                Ok(parent) => engine::open(&id, parent, url),
                 Err(e) => tracing::error!("browser: no view for {id}: {e:#}", id = super::log_safe(&id)),
             }
         }
@@ -207,61 +201,23 @@ impl Browsers {
         }
     }
 
-    /// An agent-profile browser's (access on, last attaching terminal).
-    /// None: no such browser, or the person's profile.
-    pub fn agent_state(&self, browser: &str) -> Option<(bool, Option<String>)> {
-        self.registry.get(browser).filter(|e| e.agent_profile).map(|e| (e.agent_access, e.last_agent.clone()))
-    }
-
-    /// The browsers with agent access on, with their last attaching terminal.
-    pub fn agents_on(&self) -> Vec<(String, Option<String>)> {
-        self.registry.list().iter().filter(|e| e.agent_profile && e.agent_access).map(|e| (e.browser.clone(), e.last_agent.clone())).collect()
-    }
-
-    /// Agent access on or off (`agent::may_set_access`: on only from the
-    /// pane's own control). Off ends the agent's token and connection; the
-    /// connection's end reopens the page (engine::agent_gone).
-    pub fn set_agent_access(&mut self, browser: &str, on: bool, from: Source) -> Result<(), String> {
-        agent::may_set_access(on, from).map_err(str::to_owned)?;
-        let e = self.registry.get(browser).ok_or_else(|| format!("no open browser {browser:?}: see `herdr-app ls`"))?;
-        if on {
-            agent::needs_agent_profile(e.agent_profile).map_err(str::to_owned)?;
-        }
-        self.registry.set_access(browser, on);
-        proxy::set_access(browser, on);
-        if !on {
-            proxy::revoke(browser);
-        }
-        tracing::info!("{}", super::access_line(on, browser, from));
-        Ok(())
-    }
-
     /// The caller's browser and a token url for it (`{ attach }` on the
     /// control socket). `tab_of`: a pane's tab.
     /// `check`: the same choice and checks, no token (`herdr.check`).
-    pub fn attach(&mut self, terminal: &str, space: &str, tab: &str, wanted: Option<&str>, check: bool, tab_of: &dyn Fn(&str) -> Option<String>) -> Result<Value, String> {
+    pub fn attach(&mut self, space: &str, tab: &str, wanted: Option<&str>, check: bool, tab_of: &dyn Fn(&str) -> Option<String>) -> Result<Value, String> {
         let entries: Vec<(&registry::Entry, Option<String>)> =
             self.registry.list().iter().map(|e| (e, e.pane.as_deref().and_then(tab_of))).collect();
         let candidates: Vec<Candidate> = entries
             .iter()
-            .map(|(e, t)| Candidate {
-                browser: &e.browser,
-                space: e.space.as_deref(),
-                tab: t.as_deref(),
-                focused_at: e.focused_at,
-                agent_profile: e.agent_profile,
-                access: e.agent_access,
-            })
+            .map(|(e, t)| Candidate { browser: &e.browser, space: e.space.as_deref(), tab: t.as_deref(), focused_at: e.focused_at })
             .collect();
         let (browser, how) = agent::select(&Caller { space, tab, wanted }, &candidates)?;
         let chosen = candidates.iter().find(|c| c.browser == browser).ok_or("the browser went away")?;
-        agent::ready(chosen)?;
         let (browser, pane, space) = (browser.to_owned(), entries.iter().find(|(e, _)| e.browser == browser).and_then(|(e, _)| e.pane.clone()), chosen.space.map(str::to_owned));
         if check {
             return Ok(json!({ "browser": browser, "pane": pane, "space": space, "selection": how }));
         }
         let url = proxy::attach(&browser)?;
-        self.registry.attached(&browser, terminal);
         Ok(json!({ "cdpUrl": url, "browser": browser, "pane": pane, "space": space, "selection": how }))
     }
 
@@ -274,38 +230,6 @@ impl Browsers {
     /// while painting, so a page under it hides (`label` names it in the log).
     pub fn cover(&self, label: String) -> Option<AnyElement> {
         Some(canvas(|_, _, _| {}, move |bounds, _, _, _| view::cover(&label, bounds)).absolute().size_full().into_any_element())
-    }
-
-    /// The native dialog for "Allow agent…" on `browser`, if it may open now
-    /// (`agent::may_ask`: the app active, no other dialog open; an open
-    /// agent-profile browser). Marks it open until `answer`.
-    pub fn ask(&mut self, browser: &str) -> Result<super::Ask, String> {
-        agent::may_ask(super::confirm::app_active(), self.asking.as_deref()).map_err(str::to_owned)?;
-        let e = self.registry.get(browser).ok_or_else(|| format!("no open browser {browser:?}"))?;
-        agent::needs_agent_profile(e.agent_profile).map_err(str::to_owned)?;
-        let site = agent::site(&e.page.url);
-        let (title, body) = agent::consent_text(browser, &site).map_err(str::to_owned)?;
-        self.asking = Some(browser.to_owned());
-        Ok(super::Ask { browser: browser.to_owned(), site, title, body })
-    }
-
-    /// The dialog's reply: access turns on only if `agent::turns_access_on`
-    /// says so, for a browser still open on the agent profile at the site
-    /// the dialog named. Ok(true): it is on now. Every refusal is logged.
-    /// The check reads the registry, which page events update through the
-    /// window's event channel; this runs as the dialog returns, before any
-    /// event from while it was open is applied, so a navigation during the
-    /// dialog isn't seen here (`docs/browser-dev.md` says so).
-    pub fn answer(&mut self, ask: &super::Ask, reply: super::Reply) -> Result<bool, String> {
-        self.asking = None;
-        let b = &ask.browser;
-        let unchanged = self.registry.get(b).is_some_and(|e| e.agent_profile && agent::site(&e.page.url) == ask.site);
-        if let Err(why) = agent::turns_access_on(&reply, unchanged) {
-            tracing::info!("browser: agent access stays off browser={}: {why}", super::log_safe(b));
-            return Ok(false);
-        }
-        self.set_agent_access(b, true, Source::NativeConfirm)?;
-        Ok(true)
     }
 
     pub fn set_bindings(&mut self, bindings: Vec<(String, String)>) {
@@ -323,8 +247,6 @@ impl Browsers {
             (None, Some(e)) if e.page.loading => (None, format!("Opening {}", e.page.url)),
             (None, Some(e)) => (Some(e.page.title.clone()).filter(|t| !t.is_empty()), e.page.url.clone()),
             (None, None) if self.registry.get(browser).is_some() => (None, format!("Browser {browser} shows in another block.")),
-            // An agent-profile block whose id isn't shaped like Herdr's (`registry::blocks`).
-            (None, None) if !registry::herdr_id(browser) => (None, "This browser doesn't open: an agent-profile browser needs an id shaped like Herdr's (b and 1-9 digits: b1, b2, …).".to_owned()),
             (None, None) => (None, format!("Opening {url}")),
         };
         let mut el = div()

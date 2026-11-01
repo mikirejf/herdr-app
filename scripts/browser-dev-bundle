@@ -3,12 +3,7 @@
 # feature, CEF's framework and its five helper apps. CEF on macOS only starts
 # from such a bundle. Ad hoc signed, for this machine only.
 #
-#   scripts/browser-dev-bundle [--release] [--dev-agent-access]
-#
-# --dev-agent-access: automated tests only. A debug build with the
-# `dev-agent-access` feature: launched with HERDR_DEV_AGENT_ACCESS=1, its
-# control socket can turn agent access on, which drops the consent property
-# (docs/browser-dev.md). Never show or hand out such a bundle.
+#   scripts/browser-dev-bundle [--release]
 #
 # BROWSER_DEV_APP: an absolute .app path to build into instead. The script
 # refuses to replace a bundle a running app uses: CEF starts helper processes
@@ -24,15 +19,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 profile=debug
-dev=
 for arg in "$@"; do
   case $arg in
     --release) profile=release ;;
-    --dev-agent-access) dev=,dev-agent-access ;;
-    *) echo "usage: scripts/browser-dev-bundle [--release] [--dev-agent-access]" >&2; exit 2 ;;
+    *) echo "usage: scripts/browser-dev-bundle [--release]" >&2; exit 2 ;;
   esac
 done
-features=browser$dev
 id=dev.herdr.app.browser-dev
 app=${BROWSER_DEV_APP:-target/browser-dev/Herdr Dev.app}
 [[ $app == /* ]] || app="$PWD/$app"
@@ -59,11 +51,8 @@ plist() {
 </dict></plist>
 PLIST
 }
-warn_dev() {
-  if [[ -n $dev ]]; then echo "WARNING: built with $features: its control socket can turn agent access on (HERDR_DEV_AGENT_ACCESS=1); for automated tests only" >&2; fi
-}
 
-cargo_args=(--locked --features "$features" --bin herdr-app --bin herdr-helper)
+cargo_args=(--locked --features browser --bin herdr-app --bin herdr-helper)
 if [[ $profile == release ]]; then cargo_args+=(--release); fi
 
 export CEF_PATH=${CEF_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-app/cef}
@@ -134,5 +123,4 @@ sign "$app"
 codesign --verify --strict "$app"
 
 echo "$app"
-warn_dev
 echo "size: $(du -sh "$app" | cut -f1) ($(du -sh "$app/Contents/Frameworks/Chromium Embedded Framework.framework" | cut -f1) of it CEF's framework)"

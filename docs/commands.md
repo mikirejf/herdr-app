@@ -165,14 +165,13 @@ End a terminal and its sub-agents.
 
 ## `browser.open`
 
-Open a web page (http, https or about:blank) in a browser pane (macOS builds with the browser feature): "right" (default) or "down" of a pane (default: the focused one), or as a new "tab" in its space. profile "agent": a separate test profile, the only kind an agent can drive once the person allows it. Says its browser id and pane.
+Open a web page (http, https or about:blank) in a browser pane (macOS builds with the browser feature): "right" (default) or "down" of a pane (default: the focused one), or as a new "tab" in its space. Says its browser id and pane.
 
 | Argument | Required |
 |---|---|
 | `url` | yes |
 | `place` | no |
 | `pane` | no |
-| `profile` | no |
 
 ## `browser.navigate`
 
@@ -259,15 +258,6 @@ Lay a browser's page out at another screen size (default: the focused browser): 
 | `width` | no |
 | `height` | no |
 | `mobile` | no |
-
-## `browser.agent_access`
-
-Turn agent access off for a browser (on: false): its agent's connection ends and the page reopens. Turning it on is only for the person: "Allow agent…" in an agent-profile browser's header opens a macOS dialog, and only its Allow turns it on; this command refuses on: true.
-
-| Argument | Required |
-|---|---|
-| `browser` | yes |
-| `on` | yes |
 
 ## `space.select`
 

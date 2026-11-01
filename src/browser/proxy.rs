@@ -108,9 +108,6 @@ struct Hub {
     jobs: VecDeque<Job>,
     /// Connections whose thread still runs.
     serving: HashSet<u64>,
-    /// Browsers with agent access on (the registry's switch, mirrored so a
-    /// close or quit logs the off of a browser no agent attached to).
-    access_on: HashSet<String>,
 }
 
 static HUB: OnceLock<Mutex<Hub>> = OnceLock::new();
@@ -133,18 +130,13 @@ impl Hub {
         self.end_conn(browser) || token
     }
 
-    /// Quit: every token, connection and access switch ends. Returns each
-    /// browser that had one, so each gets its "agent access off" line.
-    fn quit(&mut self) -> Vec<String> {
+    /// Quit: every token and connection ends.
+    fn quit(&mut self) {
         let mut all = self.tokens.browsers();
         all.extend(self.conns.keys().cloned());
-        all.extend(self.access_on.drain());
-        all.sort();
-        all.dedup();
         for b in &all {
             self.end_agent(b);
         }
-        all
     }
 }
 
@@ -152,8 +144,7 @@ fn hub() -> MutexGuard<'static, Hub> {
     HUB.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A new token url for `browser` (its access is on: the window checked).
-/// An earlier token for it dies and its connection closes (the new agent
+/// A new token url for `browser`. An earlier token for it dies and its connection closes (the new agent
 /// takes over; the old one sees its socket close).
 pub fn attach(browser: &str) -> Result<String, String> {
     let port = listen()?;
@@ -171,37 +162,18 @@ pub fn attach(browser: &str) -> Result<String, String> {
     Ok(format!("ws://127.0.0.1:{port}/{token}"))
 }
 
-/// Ends `browser`'s token and connection (access off, browser close, quit,
-/// CEF's agent host gone). True when something was live.
+/// Ends `browser`'s token and connection (browser close, quit, CEF's agent
+/// host gone). True when something was live.
 pub fn revoke(browser: &str) -> bool {
     let live = hub().end_agent(browser);
     engine::wake();
     live
 }
 
-/// Quit: every token and connection ends. Returns the browsers that had
-/// one or had access on.
-pub fn revoke_all() -> Vec<String> {
-    let all = hub().quit();
+/// Quit: every token and connection ends.
+pub fn revoke_all() {
+    hub().quit();
     engine::wake();
-    all
-}
-
-/// The person turned agent access on or off for `browser`.
-pub fn set_access(browser: &str, on: bool) {
-    let mut h = hub();
-    if on {
-        h.access_on.insert(browser.to_owned());
-    } else {
-        h.access_on.remove(browser);
-    }
-}
-
-/// `browser` closed: its token and connection end. True when access was
-/// on or something was live (the caller logs the off).
-pub fn close(browser: &str) -> bool {
-    let was_on = hub().access_on.remove(browser);
-    revoke(browser) || was_on
 }
 
 /// The page's committed main-frame url changed (runtime.rs, `on_address_change`).
@@ -521,10 +493,10 @@ mod tests {
 
     #[test]
     fn an_agents_method_name_cannot_forge_a_log_line() {
-        let forged = serde_json::json!({ "id": 1, "method": "Evil.x\nFORGED-LINE browser: agent access off browser=b1 by=pane control\r\u{202e}" }).to_string();
+        let forged = serde_json::json!({ "id": 1, "method": "Evil.x\nFORGED-LINE browser: agent attach browser=b1 terminal=t1\r\u{202e}" }).to_string();
         let logged = logged_method(&forged).unwrap();
         assert!(!logged.contains(['\n', '\r', '\u{202e}']), "{logged:?}");
-        assert_eq!(logged, r"Evil.x\nFORGED-LINE browser: agent access off browser=b1 by=pane control\r\u{202e}");
+        assert_eq!(logged, r"Evil.x\nFORGED-LINE browser: agent attach browser=b1 terminal=t1\r\u{202e}");
         assert_eq!(logged_method(r#"{"id":1,"method":"Page.navigate"}"#).as_deref(), Some("Page.navigate"));
     }
 
@@ -622,18 +594,12 @@ mod tests {
     }
 
     #[test]
-    fn close_and_quit_report_access_that_never_had_a_token() {
-        set_access("t-close", true);
-        assert!(close("t-close"), "access was on, with no agent");
-        assert!(!close("t-close"));
-        set_access("t-close2", true);
-        set_access("t-close2", false);
-        assert!(!close("t-close2"));
+    fn quit_ends_every_token() {
         let mut h = Hub::default();
-        h.access_on.insert("q1".into());
-        h.tokens.issue("q2", [7; 32]);
-        assert_eq!(h.quit(), vec!["q1".to_owned(), "q2".to_owned()]);
-        assert!(h.access_on.is_empty() && h.tokens.browsers().is_empty());
+        h.tokens.issue("q1", [7; 32]);
+        h.tokens.issue("q2", [8; 32]);
+        h.quit();
+        assert!(h.tokens.browsers().is_empty());
     }
 
     #[test]

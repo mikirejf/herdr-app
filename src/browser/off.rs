@@ -48,19 +48,7 @@ impl Browsers {
         Vec::new()
     }
 
-    pub fn agent_state(&self, _browser: &str) -> Option<(bool, Option<String>)> {
-        None
-    }
-
-    pub fn agents_on(&self) -> Vec<(String, Option<String>)> {
-        Vec::new()
-    }
-
-    pub fn set_agent_access(&mut self, _browser: &str, _on: bool, _from: super::Source) -> Result<(), String> {
-        Err(UNAVAILABLE.into())
-    }
-
-    pub fn attach(&mut self, _terminal: &str, _space: &str, _tab: &str, _wanted: Option<&str>, _check: bool, _tab_of: &dyn Fn(&str) -> Option<String>) -> Result<serde_json::Value, String> {
+    pub fn attach(&mut self, _space: &str, _tab: &str, _wanted: Option<&str>, _check: bool, _tab_of: &dyn Fn(&str) -> Option<String>) -> Result<serde_json::Value, String> {
         Err(UNAVAILABLE.into())
     }
 
@@ -73,16 +61,6 @@ impl Browsers {
     /// No pages, so overlays report nothing.
     pub fn cover(&self, _label: String) -> Option<AnyElement> {
         None
-    }
-
-    /// No agent browsers, so no dialog.
-    pub fn ask(&mut self, _browser: &str) -> Result<super::Ask, String> {
-        Err(UNAVAILABLE.into())
-    }
-
-    /// Never asked: nothing turns access on.
-    pub fn answer(&mut self, _ask: &super::Ask, _reply: super::Reply) -> Result<bool, String> {
-        Err(UNAVAILABLE.into())
     }
 
     pub fn element(&self, _node: &str, browser: &str, url: &str, look: super::Look) -> AnyElement {

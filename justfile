@@ -80,7 +80,7 @@ browser-stop:
 
 # Serves scripts/ on http://127.0.0.1:8765 for browser panes (they open
 # http, https and about:blank only): open
-# http://127.0.0.1:8765/browser-fixture.html with --profile agent.
+# http://127.0.0.1:8765/browser-fixture.html.
 # Serves scripts/ over loopback http for browser panes
 browser-fixture port="8765":
     python3 -m http.server {{port}} --bind 127.0.0.1 --directory scripts

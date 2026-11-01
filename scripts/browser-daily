@@ -92,7 +92,7 @@ case "${1:-}" in
     ;;
   pages)
     running "$daily" || { echo "browser-daily: the browser build isn't running; switch on first: bash scripts/browser-daily on" >&2; exit 1; }
-    # Tab-separated title and address; a page without agent access is listed without its query string.
+    # Tab-separated title and address.
     "$daily/Contents/MacOS/Herdr" ls | python3 -I -c 'import json, sys
 for b in json.load(sys.stdin).get("browsers") or []:
     print("{}\t{}".format(b.get("title") or "(untitled)", b.get("url") or ""))'

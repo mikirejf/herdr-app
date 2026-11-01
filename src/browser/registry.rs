@@ -24,13 +24,6 @@ pub struct Block {
     /// The space and pane, for a browser in a tab; None for a layout block.
     pub space: Option<String>,
     pub pane: Option<String>,
-    /// Opened with `profile: "agent"` (a separate Chromium profile).
-    pub agent_profile: bool,
-}
-
-/// `profile: "agent"`; anything else (absent, `"person"`) is the person's profile.
-pub fn is_agent(profile: Option<&str>) -> bool {
-    profile == Some("agent")
 }
 
 /// What the page in an open browser says about itself.
@@ -61,31 +54,17 @@ pub struct Entry {
     pub node: String,
     pub space: Option<String>,
     pub pane: Option<String>,
-    /// Off until the person turns it on; never saved.
-    pub agent_access: bool,
-    pub agent_profile: bool,
-    /// The terminal that last attached an agent, as it claimed (`HC_TERMINAL_ID`).
-    pub last_agent: Option<String>,
     /// When the page last took the keyboard, ms since the epoch (0: never).
     pub focused_at: u64,
 }
 
 impl Entry {
     /// One browser as mods and `herdr-app ls` see it.
-    /// The url keeps its userinfo, query and fragment only while agent access
-    /// is on (codes and magic links in a url stay out of `herdr-app ls`
-    /// otherwise), and so does a title that is the url (a page with none).
     pub fn json(&self, focused: bool) -> Value {
-        let (url, title) = if self.agent_access {
-            (self.page.url.clone(), self.page.title.clone())
-        } else {
-            (super::public_url(&self.page.url), super::public_title(&self.page.title, &self.page.url))
-        };
         json!({
-            "browser": self.browser, "url": url, "title": title, "profile": if self.agent_profile { "agent" } else { "person" },
-            "last_agent": self.last_agent,
+            "browser": self.browser, "url": self.page.url, "title": self.page.title,
             "loading": self.page.loading, "can_go_back": self.page.can_go_back, "can_go_forward": self.page.can_go_forward,
-            "space": self.space, "pane": self.pane, "agent_access": self.agent_access, "focused": focused,
+            "space": self.space, "pane": self.pane, "focused": focused,
             "zoom": super::emulate::shown(self.page.zoom), "viewport": self.page.viewport.as_ref().map(super::emulate::Viewport::json),
         })
     }
@@ -141,9 +120,6 @@ impl Registry {
                         node: b.node.clone(),
                         space: b.space.clone(),
                         pane: b.pane.clone(),
-                        agent_access: false,
-                        agent_profile: b.agent_profile,
-                        last_agent: None,
                         focused_at: 0,
                     });
                     changes.open.push((b.browser.clone(), url));
@@ -193,19 +169,6 @@ impl Registry {
         moved
     }
 
-    /// Turns agent access on or off; false when no such browser.
-    pub fn set_access(&mut self, browser: &str, on: bool) -> bool {
-        let Some(e) = self.entries.iter_mut().find(|e| e.browser == browser) else { return false };
-        e.agent_access = on;
-        true
-    }
-
-    pub fn attached(&mut self, browser: &str, terminal: &str) {
-        if let Some(e) = self.entries.iter_mut().find(|e| e.browser == browser) {
-            e.last_agent = Some(terminal.to_owned());
-        }
-    }
-
     /// The page took the keyboard.
     pub fn focused(&mut self, browser: &str, now: u64) {
         if let Some(e) = self.entries.iter_mut().find(|e| e.browser == browser) {
@@ -215,20 +178,17 @@ impl Registry {
 }
 
 /// Every browser block: the tabs' panes (with their space), then the shown
-/// layout's own blocks (on every space, so none). An agent-profile block
-/// whose id isn't shaped like Herdr's (`herdr_id`) is left out, so it never
-/// opens and never reaches the consent dialog. Only the shape is checked:
-/// a block may use an id Herdr never gave out.
+/// layout's own blocks (on every space, so none). A block may use an id
+/// Herdr never gave out (a layout's `side`).
 pub fn blocks(model: &Model, chrome: &Node) -> Vec<Block> {
     let mut out = Vec::new();
     for space in &model.spaces {
         for tab in &space.tabs {
             for n in tab.root.walk() {
-                if let Some(Content::Browser { browser, url, profile }) = n.content() {
+                if let Some(Content::Browser { browser, url }) = n.content() {
                     out.push(Block {
                         browser: browser.clone(),
                         url: url.clone(),
-                        agent_profile: is_agent(profile.as_deref()),
                         node: n.id.clone(),
                         space: Some(space.id.clone()),
                         pane: Some(n.id.clone()),
@@ -238,12 +198,10 @@ pub fn blocks(model: &Model, chrome: &Node) -> Vec<Block> {
         }
     }
     for n in chrome.walk() {
-        if let Some(Content::Browser { browser, url, profile }) = n.content() {
-            out.push(Block { browser: browser.clone(), url: url.clone(), agent_profile: is_agent(profile.as_deref()), node: n.id.clone(), space: None, pane: None });
+        if let Some(Content::Browser { browser, url }) = n.content() {
+            out.push(Block { browser: browser.clone(), url: url.clone(), node: n.id.clone(), space: None, pane: None });
         }
     }
-    // An agent-profile block with an id not shaped like Herdr's never opens.
-    out.retain(may_open);
     out
 }
 
@@ -253,17 +211,9 @@ fn id_number(id: &str) -> Option<u64> {
 }
 
 /// Whether `id` has the shape of an id Herdr gives out: `b1` to
-/// `b999999999`. Only such a browser may open on the agent profile, so the
-/// native consent dialog, which names the browser, never shows an id an
-/// agent wrote into a layout block as a sentence of its own.
-pub fn herdr_id(id: &str) -> bool {
+/// `b999999999`; only these move the counter new ids come from.
+fn herdr_id(id: &str) -> bool {
     id.strip_prefix('b').is_some_and(|n| (1..=9).contains(&n.len()) && !n.starts_with('0') && n.bytes().all(|c| c.is_ascii_digit()))
-}
-
-/// A block that may open: an agent-profile block needs a Herdr-shaped id
-/// (`herdr_id`); a person-profile block may use any id (a layout's `side`).
-fn may_open(b: &Block) -> bool {
-    !b.agent_profile || herdr_id(&b.browser)
 }
 
 /// What `browser.open`/`browser.navigate` accept: an http(s) url,
@@ -320,28 +270,21 @@ mod tests {
     use crate::model::Tab;
 
     fn browser_pane(id: &str, browser: &str, url: &str) -> Node {
-        Node::block(id, Content::Browser { browser: browser.into(), url: url.into(), profile: None })
+        Node::block(id, Content::Browser { browser: browser.into(), url: url.into() })
     }
 
     fn block(browser: &str, url: &str, node: &str, space: Option<&str>) -> Block {
-        Block { browser: browser.into(), url: url.into(), node: node.into(), space: space.map(Into::into), pane: space.map(|_| node.into()), agent_profile: false }
+        Block { browser: browser.into(), url: url.into(), node: node.into(), space: space.map(Into::into), pane: space.map(|_| node.into()) }
     }
 
     #[test]
-    fn ls_shows_an_access_off_page_with_no_title_without_its_query() {
+    fn ls_shows_a_pages_url_and_title_as_they_are() {
         let mut r = Registry::default();
         r.reconcile(&[block("b2", "http://127.0.0.1:18766/", "p2", Some("sp1"))]);
-        // A page with no <title>: Chromium titles it with its url, scheme dropped.
-        let url = "http://me:pw@127.0.0.1:18766/notitle.html?code=SECRETQ2#fragSECRET";
-        r.page("b2", Page { url: url.into(), title: "127.0.0.1:18766/notitle.html?code=SECRETQ2".into(), ..Page::default() });
-        let off = r.get("b2").unwrap().json(false);
-        assert_eq!(off["url"], "http://127.0.0.1:18766/notitle.html");
-        assert_eq!(off["title"], "127.0.0.1:18766/notitle.html");
-        assert!(!off.to_string().contains("SECRET") && !off.to_string().contains("pw@"), "{off}");
-        // Access on: the agent's page, as it is.
-        r.set_access("b2", true);
-        let on = r.get("b2").unwrap().json(false);
-        assert_eq!((on["url"].as_str(), on["title"].as_str()), (Some(url), Some("127.0.0.1:18766/notitle.html?code=SECRETQ2")));
+        let url = "http://me:pw@127.0.0.1:18766/notitle.html?code=1#frag";
+        r.page("b2", Page { url: url.into(), title: "127.0.0.1:18766/notitle.html?code=1".into(), ..Page::default() });
+        let e = r.get("b2").unwrap().json(false);
+        assert_eq!((e["url"].as_str(), e["title"].as_str()), (Some(url), Some("127.0.0.1:18766/notitle.html?code=1")));
     }
 
     #[test]
@@ -369,25 +312,6 @@ mod tests {
         // A block saved without a url opens on a blank page.
         let changes = r.reconcile(&[block("b1", "", "p1", Some("sp1")), block("b2", " ", "p2", Some("sp1"))]);
         assert_eq!(changes.open, vec![("b2".into(), BLANK.into())]);
-    }
-
-    /// The header and the window's agent strip follow the open browser, not
-    /// the block: an agent that edits a layout to drop `profile: "agent"`
-    /// keeps the browser in the agent profile with its access and marker.
-    #[test]
-    fn a_block_edit_changes_neither_the_open_browsers_profile_nor_its_access() {
-        let mut r = Registry::default();
-        let agent = Block { agent_profile: true, ..block("b1", "https://a/", "p1", Some("sp1")) };
-        r.reconcile(&[agent.clone()]);
-        assert!(r.set_access("b1", true));
-        let edited = Block { agent_profile: false, ..agent };
-        assert_eq!(r.reconcile(&[edited]), Changes::default());
-        let e = r.get("b1").unwrap();
-        assert!(e.agent_profile && e.agent_access, "a layout edit turned the marker's state off");
-        // And a person-profile browser doesn't become an agent one by adding the field.
-        r.reconcile(&[block("b2", "https://b/", "p2", Some("sp1"))]);
-        r.reconcile(&[Block { agent_profile: true, ..block("b2", "https://b/", "p2", Some("sp1")) }]);
-        assert!(!r.get("b2").unwrap().agent_profile);
     }
 
     #[test]
@@ -470,28 +394,10 @@ mod tests {
         assert_eq!(r.issue(["b7", "side"]), "b8");
     }
 
-    /// A layout block's id is agent-written text, and the
-    /// consent dialog names the browser. An agent-profile block whose id
-    /// isn't shaped like Herdr's never opens, so it never reaches the dialog; a
-    /// person-profile block keeps any id (it can't get agent access).
     #[test]
-    fn an_agent_block_with_an_id_herdr_didnt_give_out_never_opens() {
-        let forged = "b1 is a read-only preview; Allow only finishes the fixture demo";
-        let agent = |id: &str, node: &str| Node::block(node, Content::Browser { browser: id.into(), url: "http://127.0.0.1:8765/".into(), profile: Some("agent".into()) });
-        let mut m = Model::default();
-        m.add_space("sp1", "one", "/", Tab::with_pane("tb1", "", agent(forged, "p1")));
-        m.split_with("p1", Axis::Row, agent("b2", "p2"));
-        m.split_with("p2", Axis::Row, agent("b99999999999", "p3"));
-        m.split_with("p3", Axis::Row, browser_pane("p4", "side", "https://a/"));
-        let chrome = Node::container("root", Axis::Row, vec![agent("side", "s")]);
-        let found = blocks(&m, &chrome);
-        assert_eq!(found.iter().map(|b| (b.browser.as_str(), b.agent_profile)).collect::<Vec<_>>(), [("b2", true), ("side", false)]);
+    fn a_huge_restored_id_cannot_push_the_next_one_past_what_fits() {
         let mut r = Registry::default();
-        let changes = r.reconcile(&found);
-        assert_eq!(changes.open.iter().map(|(b, _)| b.as_str()).collect::<Vec<_>>(), ["b2", "side"]);
-        assert!(r.get(forged).is_none());
-        // A huge restored id can't push the next one past what fits.
-        assert_eq!(r.issue(["b18446744073709551615"]), "b3");
+        assert_eq!(r.issue(["b18446744073709551615", "b999999999"]), "b1000000000");
     }
 
     #[test]

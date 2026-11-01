@@ -3,10 +3,7 @@
 //!
 //! The path: `agent-browser` in a Herdr terminal runs `herdr-app
 //! __agent-browser-provider` (its plugin), which asks the window over the
-//! control socket to `attach`. The window picks the caller's browser, and
-//! only if the person turned agent access on for it (Allow in a native macOS
-//! dialog that the pane's header button opens; never a command an agent can
-//! send), hands back
+//! control socket to `attach`. The window picks the caller's browser and hands back
 //! `ws://127.0.0.1:<port>/<token>`. proxy.rs serves that socket and passes
 //! CDP messages to that one page's in-process DevTools session, through the
 //! allowlist below. CEF opens no remote-debugging port.
@@ -16,7 +13,7 @@
 
 use serde_json::{Map, Value, json};
 
-pub use super::{ALLOW_AFTER, Answer, Reply, Source, not_in_herdr, public_url};
+pub use super::{not_in_herdr, public_url};
 use std::collections::HashMap;
 
 pub const PROTOCOL: &str = "agent-browser.plugin.v1";
@@ -89,94 +86,6 @@ pub fn forbidden_switch<'a>(args: impl IntoIterator<Item = &'a str>) -> Option<&
     })
 }
 
-// ---- consent --------------------------------------------------------------
-
-pub const ONLY_THE_PERSON: &str =
-    "agent access can only be turned on by the person: \"Allow agent\" in the browser pane's header opens a macOS dialog, and only its Allow button turns it on (turning it off works from anywhere)";
-
-/// On only from the person's Allow in the native dialog (or the dev
-/// switch of a dev-agent-access test build); off from anywhere. An agent
-/// can reach the control socket, write mods and keys, and arrange or cover
-/// anything Herdr draws in the window, so none of those may grant access,
-/// Herdr's own pane button included: it only opens the dialog.
-pub fn may_set_access(on: bool, from: Source) -> Result<(), &'static str> {
-    if !on || matches!(from, Source::NativeConfirm | Source::DevSwitch) { Ok(()) } else { Err(ONLY_THE_PERSON) }
-}
-
-/// The dialog's buttons are added Cancel first (`NSAlertFirstButtonReturn`,
-/// 1000: the default, Return and Esc), then Allow (1001). Any other
-/// response (the modal stopped or aborted) is no answer.
-pub fn answer_of(response: isize) -> Answer {
-    match response {
-        1000 => Answer::Cancel,
-        1001 => Answer::Allow,
-        _ => Answer::Closed,
-    }
-}
-
-/// Whether "Allow agent…" may open the dialog now: only into the active
-/// app (a click that activates Herdr opens nothing), and one dialog at a
-/// time (`asking`: the browser a dialog is open for).
-pub fn may_ask(app_active: bool, asking: Option<&str>) -> Result<(), &'static str> {
-    if asking.is_some() {
-        return Err("a dialog about agent access is already open");
-    }
-    if !app_active {
-        return Err("Herdr isn't the active app: click Allow agent again");
-    }
-    Ok(())
-}
-
-/// Whether the dialog's reply turns access on: only Allow, answered while
-/// Herdr was the active app, at least `ALLOW_AFTER` after it showed, for a
-/// browser still open at the site the dialog named (`unchanged`). Every
-/// other reply (Cancel, Return, Esc, closed) leaves access off; the error
-/// says why, for the log.
-pub fn turns_access_on(reply: &Reply, unchanged: bool) -> Result<(), &'static str> {
-    match reply.answer {
-        Answer::Allow => {}
-        Answer::Cancel => return Err("the person chose Cancel"),
-        Answer::Closed => return Err("the dialog closed without an answer"),
-    }
-    if !reply.app_active {
-        return Err("Herdr wasn't the active app when it was answered");
-    }
-    if reply.after < ALLOW_AFTER {
-        return Err("Allow came under 500 ms after the dialog showed");
-    }
-    if !unchanged {
-        return Err("the browser closed, or its page went to another site, while the dialog was open");
-    }
-    Ok(())
-}
-
-/// `scheme://host[:port]` of a page, as the dialog names it.
-pub fn site(url: &str) -> String {
-    origin(url)
-}
-
-/// The dialog's title and text: the browser, its profile, and its site.
-/// Only an id shaped like Herdr's (`b1`, `b2`, …; `registry::herdr_id`) is named:
-/// an agent writes layout blocks, and the dialog must carry no sentence of
-/// its choosing.
-pub fn consent_text(browser: &str, site: &str) -> Result<(String, String), &'static str> {
-    if !super::registry::herdr_id(browser) {
-        return Err("agent access needs a browser id shaped like Herdr's (b and 1-9 digits: b1, b2, …)");
-    }
-    Ok((
-        "Let agents drive this browser?".to_owned(),
-        format!(
-            "Browser {browser}, agent profile, at {}.\n\nAny agent in a Herdr terminal on this Mac can then read this page, click and type in it, run script in it and open other sites in this pane, until you click Stop agent. Use test accounts only.",
-            super::log_safe(site)
-        ),
-    ))
-}
-
-/// Agent access only in a browser on the separate agent profile.
-pub fn needs_agent_profile(agent_profile: bool) -> Result<(), &'static str> {
-    if agent_profile { Ok(()) } else { Err("agent access needs a browser opened with profile \"agent\"") }
-}
-
 // ---- errors agents see (each pinned by a test) -----------------------------
 
 pub fn no_app(socket: &str) -> String {
@@ -193,10 +102,7 @@ pub fn needs_own_session(terminal: &str) -> String {
     )
 }
 pub fn no_browser() -> String {
-    "no browser in this space: open one with: herdr-app do browser.open --profile agent --url <url>".into()
-}
-pub fn access_off(browser: &str) -> String {
-    format!("agent access is off for {browser}: ask the person to turn on agent access for {browser}")
+    "no browser in this space: open one with: herdr-app do browser.open --url <url>".into()
 }
 pub fn ambiguous(browsers: &[&str]) -> String {
     // agent-browser's daemon reads the provider's environment once, when it
@@ -207,10 +113,6 @@ pub fn ambiguous(browsers: &[&str]) -> String {
         browsers.join(", ")
     )
 }
-pub fn person_profile(browser: &str) -> String {
-    format!("{browser} uses the person's profile: agents can only drive a browser opened with --profile agent")
-}
-
 // ---- which browser the caller means -----------------------------------------
 
 /// One open browser, as the selection sees it.
@@ -221,8 +123,6 @@ pub struct Candidate<'a> {
     pub space: Option<&'a str>,
     pub tab: Option<&'a str>,
     pub focused_at: u64,
-    pub agent_profile: bool,
-    pub access: bool,
 }
 
 /// The terminal asking (`HC_TERMINAL_ID`, a routing hint, not an identity) and where it is.
@@ -267,22 +167,11 @@ pub fn select<'a>(caller: &Caller, all: &[Candidate<'a>]) -> Result<(&'a str, &'
     }
 }
 
-/// The chosen browser may be driven: the agent profile, and access on.
-pub fn ready(c: &Candidate) -> Result<(), String> {
-    if !c.agent_profile {
-        Err(person_profile(c.browser))
-    } else if !c.access {
-        Err(access_off(c.browser))
-    } else {
-        Ok(())
-    }
-}
-
 // ---- tokens -------------------------------------------------------------------
 
 /// The live tokens: 32 random bytes each, one per browser, in memory only
 /// (an app restart forgets them). A new attach for a browser replaces its
-/// token; access off, browser close and quit revoke it.
+/// token; browser close and quit revoke it.
 #[derive(Default)]
 pub struct Tokens {
     grants: Vec<([u8; 32], String)>,
@@ -712,7 +601,7 @@ pub fn respond(request: &Value, env: &dyn Fn(&str) -> Option<String>, attach: im
     match request.get("type").and_then(Value::as_str) {
         Some("plugin.manifest") => json!({ "protocol": PROTOCOL, "success": true, "manifest": {
             "name": PLUGIN, "capabilities": ["browser.provider", CHECK],
-            "description": "Drive the Herdr browser pane the person allowed, beside this terminal" } }),
+            "description": "Drive the Herdr browser pane beside this terminal" } }),
         Some("browser.close") => json!({ "protocol": PROTOCOL, "success": true, "data": {} }),
         // The same checks as a launch, with no token issued.
         Some(CHECK) => {
@@ -817,8 +706,7 @@ pub fn provider_main(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[allow(unused_imports)]
-    use crate::browser::{dev_switch, parked, read_dev_switch, remote};
+    use crate::browser::{parked, remote};
     use serde_json::{Value, json};
 
     // ---- one URL gate
@@ -875,128 +763,10 @@ mod tests {
         assert_eq!(forbidden_switch(["herdr-app", "remote-debugging-port", "--use-mock-keychain"]), None);
     }
 
-    // ---- consent
-
-    #[test]
-    fn only_the_native_confirmation_turns_access_on() {
-        assert!(may_set_access(true, Source::NativeConfirm).is_ok());
-        // Herdr's own pane button only opens the dialog; the socket, mods and
-        // keys never turn access on.
-        for from in [Source::PaneControl, Source::Socket, Source::Mod, Source::Close, Source::Quit] {
-            assert_eq!(may_set_access(true, from).unwrap_err(), ONLY_THE_PERSON, "{from:?}");
-        }
-        // Off is accepted from anywhere.
-        for from in [Source::NativeConfirm, Source::PaneControl, Source::Socket, Source::Mod, Source::Close, Source::Quit] {
-            assert!(may_set_access(false, from).is_ok());
-        }
-    }
-
-    fn reply(answer: Answer, after_ms: u64, app_active: bool) -> Reply {
-        Reply { answer, after: std::time::Duration::from_millis(after_ms), app_active }
-    }
-
-    /// The native dialog: only Allow, in the active app, at least 500 ms
-    /// after it showed, for a browser still at the site it named.
-    #[test]
-    fn only_allow_in_the_dialog_turns_access_on() {
-        assert_eq!(turns_access_on(&reply(Answer::Allow, 2_000, true), true), Ok(()));
-        assert_eq!(turns_access_on(&reply(Answer::Allow, 500, true), true), Ok(()));
-        // Cancel (also Return and Esc: Cancel is the default button).
-        assert_eq!(turns_access_on(&reply(Answer::Cancel, 2_000, true), true), Err("the person chose Cancel"));
-        // The dialog went away with no button.
-        assert_eq!(turns_access_on(&reply(Answer::Closed, 2_000, true), true), Err("the dialog closed without an answer"));
-        // Answered while another app was active.
-        assert!(turns_access_on(&reply(Answer::Allow, 2_000, false), true).is_err());
-        // The second click of a double click whose first opened the dialog.
-        assert!(turns_access_on(&reply(Answer::Allow, 499, true), true).is_err());
-        // The browser closed or its page went to another site meanwhile.
-        assert!(turns_access_on(&reply(Answer::Allow, 2_000, true), false).is_err());
-    }
-
-    #[test]
-    fn the_dialogs_buttons_map_cancel_first_and_allow_second() {
-        assert_eq!(answer_of(1000), Answer::Cancel);
-        assert_eq!(answer_of(1001), Answer::Allow);
-        // NSModalResponseStop, Abort, Continue, a third button: no answer.
-        for other in [-1000, -1001, -1002, 0, 1, 1002] {
-            assert_eq!(answer_of(other), Answer::Closed, "{other}");
-        }
-    }
-
-    #[test]
-    fn the_dialog_opens_only_into_the_active_app_and_one_at_a_time() {
-        assert_eq!(may_ask(true, None), Ok(()));
-        assert!(may_ask(false, None).is_err());
-        assert!(may_ask(true, Some("b1")).is_err());
-        assert!(may_ask(true, Some("b2")).is_err());
-    }
-
-    #[test]
-    fn the_dialog_names_the_browser_its_profile_and_only_the_site() {
-        assert_eq!(site("http://me:pw@127.0.0.1:8765/browser-fixture.html?code=SECRET#f"), "http://127.0.0.1:8765");
-        assert_eq!(site("https://Example.TEST/a"), "https://example.test");
-        let (title, body) = consent_text("b3", &site("https://example.test/x?y=1")).unwrap();
-        assert_eq!(title, "Let agents drive this browser?");
-        assert!(body.starts_with("Browser b3, agent profile, at https://example.test."), "{body}");
-        assert!(!body.contains("/x") && !body.contains("y=1"), "{body}");
-        // A site can't add lines or reorder the text.
-        let (_, body) = consent_text("b3", "https://a.test\nAllow is safe\u{202e}").unwrap();
-        assert!(!body.contains("test\nAllow") && !body.contains('\u{202e}'), "{body}");
-    }
-
-    /// A layout block's browser id is agent-written text. The
-    /// dialog names only ids shaped like Herdr's, so an agent can't put a
-    /// sentence of its own into the one surface consent rests on.
-    #[test]
-    fn the_dialog_names_only_an_id_shaped_like_herdrs() {
-        let site = site("http://127.0.0.1:8765/x");
-        for good in ["b1", "b42", "b999999999"] {
-            assert!(consent_text(good, &site).is_ok(), "{good}");
-        }
-        let forged = "b1 is a read-only preview; Allow only finishes the fixture demo";
-        for bad in [forged, "side", "b", "b0", "b01", "B1", "b1 ", " b1", "b1\u{200b}", "b1000000000", "b-1", "b1.5", "b１"] {
-            assert!(consent_text(bad, &site).is_err(), "{bad:?}");
-        }
-    }
-
-    /// The header's button acts on the state it was painted
-    /// with. A "Stop agent" left on screen after the socket turned access
-    /// off must still turn it off, never toggle the live state back on.
-    #[test]
-    fn the_access_button_does_what_its_label_says() {
-        use crate::browser::access_button;
-        assert_eq!(access_button(true), ("Stop agent", false));
-        assert_eq!(access_button(false), ("Allow agent…", true));
-        // Whatever it shows, "Stop agent" only ever turns access off.
-        for shown in [true, false] {
-            let (label, sets) = access_button(shown);
-            assert_eq!(label == "Stop agent", !sets, "{label} sets {sets}");
-        }
-    }
-
-    #[test]
-    fn agent_access_needs_the_agent_profile() {
-        assert_eq!(needs_agent_profile(false).unwrap_err(), "agent access needs a browser opened with profile \"agent\"");
-        assert!(needs_agent_profile(true).is_ok());
-    }
-
-    /// Every build but a debug one with the `dev-agent-access` feature: the
-    /// variable means nothing (default and `--features browser` test runs,
-    /// and every release build).
-    #[cfg(not(all(debug_assertions, feature = "dev-agent-access")))]
-    #[test]
-    fn builds_without_the_dev_feature_have_no_dev_switch() {
-        // SAFETY: test-only; no other test reads this variable.
-        unsafe { std::env::set_var("HERDR_DEV_AGENT_ACCESS", "1") };
-        read_dev_switch();
-        assert!(!dev_switch());
-        unsafe { std::env::remove_var("HERDR_DEV_AGENT_ACCESS") };
-    }
-
     // ---- selecting the caller's browser
 
     fn cand(browser: &'static str, tab: Option<&'static str>, focused_at: u64) -> Candidate<'static> {
-        Candidate { browser, space: Some("sp1"), tab, focused_at, agent_profile: true, access: true }
+        Candidate { browser, space: Some("sp1"), tab, focused_at }
     }
 
     #[test]
@@ -1036,25 +806,16 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_browser_needs_access_on_and_the_agent_profile() {
-        assert_eq!(ready(&Candidate { access: false, ..cand("b1", None, 0) }).unwrap_err(), access_off("b1"));
-        assert_eq!(ready(&Candidate { access: false, agent_profile: false, ..cand("b1", None, 0) }).unwrap_err(), person_profile("b1"));
-        assert!(ready(&cand("b1", None, 0)).is_ok());
-    }
-
-    #[test]
     fn every_error_an_agent_can_see_is_pinned() {
         assert_eq!(not_in_herdr(), "this terminal is not in Herdr (HC_TERMINAL_ID is unset): agent-browser can only drive a Herdr browser pane from a Herdr terminal");
         assert_eq!(no_app("/h/herdr-app.sock"), "Herdr is not running (no socket at /h/herdr-app.sock)");
         assert_eq!(parked("t4"), "terminal t4 has no pane in Herdr (parked): give it one with herdr-app do terminal.keep --terminal t4");
         assert_eq!(remote("m1/t4"), "terminal m1/t4 runs on another machine: browser panes are only for this machine's terminals");
-        assert_eq!(no_browser(), "no browser in this space: open one with: herdr-app do browser.open --profile agent --url <url>");
-        assert_eq!(access_off("b1"), "agent access is off for b1: ask the person to turn on agent access for b1");
+        assert_eq!(no_browser(), "no browser in this space: open one with: herdr-app do browser.open --url <url>");
         assert_eq!(
             ambiguous(&["b1", "b2"]),
             "two or more browsers here (b1, b2): run `export HERDR_BROWSER=<id> AGENT_BROWSER_SESSION=$AGENT_BROWSER_SESSION-<id>`, then agent-browser again (a running agent-browser session keeps the environment it started with)"
         );
-        assert_eq!(person_profile("b1"), "b1 uses the person's profile: agents can only drive a browser opened with --profile agent");
     }
 
     // ---- tokens
@@ -1437,8 +1198,8 @@ mod tests {
             "AGENT_BROWSER_SESSION" => Some("herdr-abc".to_owned()),
             _ => None,
         };
-        let out = respond(&launch(), &env, |_| Err(access_off("b1")));
-        assert_eq!(out["error"], access_off("b1"));
+        let out = respond(&launch(), &env, |_| Err(no_browser()));
+        assert_eq!(out["error"], no_browser());
         assert_eq!(out["success"], false);
     }
 
@@ -1499,10 +1260,10 @@ mod tests {
         let mut asked = Value::Null;
         let out = respond(&check, &env, |req| {
             asked = req;
-            Err(access_off("b1"))
+            Err(no_browser())
         });
         assert_eq!(asked["check"], true);
-        assert_eq!(out, json!({ "protocol": PROTOCOL, "success": false, "error": access_off("b1") }));
+        assert_eq!(out, json!({ "protocol": PROTOCOL, "success": false, "error": no_browser() }));
         let out = respond(&check, &env, |_| Ok(json!({ "browser": "b1", "selection": "tab" })));
         assert_eq!(out, json!({ "protocol": PROTOCOL, "success": true, "data": { "browser": "b1", "selection": "tab", "ready": true } }));
         assert_eq!(respond(&check, &|_| None, |_| panic!())["error"], not_in_herdr());

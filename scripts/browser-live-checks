@@ -4,9 +4,8 @@
 #
 #   bash scripts/browser-live-checks
 #
-# It opens scripts/browser-live-checks.html on the agent profile, asks you to
-# allow agent access, then drives the page and asks what you saw. Answers go
-# to a results file it names at the end.
+# It opens scripts/browser-live-checks.html, drives the page and asks what you
+# saw. Answers go to a results file it names at the end.
 set -euo pipefail
 
 herdr=${HERDR_APP_CLI:-/tmp/hbd.dev/herdr-app}
@@ -32,40 +31,27 @@ ab() { echo "+ agent-browser $*"; agent-browser "$@" || echo "  (agent-browser e
 
 echo "Engine and build: $("$herdr" --version 2>/dev/null || echo unknown)" | tee "$out"
 
-echo; echo "== 1. Open the page and the consent dialog"
-"$herdr" "do" browser.open --profile agent --url "$url"
-read -r -p "Browser id in the new pane's header (e.g. b3): " id
+echo; echo "== 1. Open the page"
+"$herdr" "do" browser.open --url "$url"
+read -r -p "Browser id the command printed (e.g. b3): " id
 export HERDR_BROWSER=$id AGENT_BROWSER_SESSION=${AGENT_BROWSER_SESSION:-herdr}-$id
-pause "Click 'Allow agent…' in that pane's header. When the dialog shows, press Tab, then Space, but first read the next line"
-echo "  Expected: Return and Esc cancel; Space presses whichever button has the focus ring."
-ask dialog-keys "Did Tab move the focus ring and Space press only the focused button?"
-pause "Open the dialog again if needed and click Allow"
-ask access-on "Does the header say the agent has access?"
 
-echo; echo "== 2. Iframe console (the fix in this round)"
-ab console
-ask iframe-console "Does the output above show 'MAIN frame console line' and NOT 'FORGED by an iframe'?"
-
-echo; echo "== 3. Agent drag"
+echo; echo "== 2. Agent drag"
 ab drag '#src' '#dst'
 ask drag "Does the page say 'Drag: dropped'?"
 
-echo; echo "== 4. Agent right-click"
+echo; echo "== 3. Agent right-click"
 read -r x y < <(agent-browser eval 'const r = document.getElementById("menu").getBoundingClientRect(); Math.round(r.x + r.width / 2) + " " + Math.round(r.y + r.height / 2)' | tr -d '"')
 ab mouse move "$x" "$y"
 ab mouse down right
 ab mouse up right
 ask right-click "Does the page say 'context menu, button 2', with no native menu left open?"
 
-echo; echo "== 5. Focus steal"
+echo; echo "== 4. Focus steal"
 pause "Click into a different Herdr terminal pane (not this one) so it has the keyboard"
 sleep 3
 ab focus '#name'
 ab fill '#name' 'typed by the agent'
 ask focus-kept "Did the keyboard stay in the pane you clicked (type a letter there to check), while the page shows 'Typed: typed by the agent'?"
-
-echo; echo "== 6. Stop agent"
-pause "Click 'Stop agent' in the pane's header"
-if agent-browser get title >/dev/null 2>&1; then record stop-agent "FAIL — the agent still reached the page"; else record stop-agent pass; fi
 
 echo; echo "Results: $out"

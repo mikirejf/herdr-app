@@ -220,7 +220,7 @@ A layout is a tree of nodes. Four types:
   terminals as it arranges them), or `{ "agent": "focused" }` (one agent's
   terminal, full size: the one chosen with `agent.focus` / `agent.next`, else
   the focused pane's agent, else the first agent), or `{ "mod": "browser-prototype",
-  "props": { "browser": "b1", "url": "...", "profile"?: "agent" } }` (a web
+  "props": { "browser": "b1", "url": "..." } }` (a web
   page the app draws, not a mod folder; it never opens in `floating`).
 - `row` / `column`: children side by side / stacked.
 - `stack`: shows one child (`"active": "<child id>"`), with an optional
@@ -580,7 +580,7 @@ The main ones:
   Terminals display Kitty graphics, including Unicode placeholder images used by
   programs such as yazi; partial images and scrolling follow the placeholder cells.
 - Browsers (macOS builds with the `browser` feature; elsewhere a placeholder):
-  `browser.open {url, place?, pane?, profile?}` (place `"right"` default, `"down"`, `"tab"`;
+  `browser.open {url, place?, pane?}` (place `"right"` default, `"down"`, `"tab"`;
   says `{browser, pane}`), `browser.navigate {browser, url}`, `browser.back {browser}`,
   `browser.forward {browser}`, `browser.reload {browser}`, `browser.close {browser}`,
   `browser.open_external {browser?}` (the page in the default web browser; http and https only),
@@ -592,14 +592,9 @@ The main ones:
   browser; an agent's own Emulation override replaces it, last one wins). `herdr-app ls` and `browsers()` list them
   (with `zoom` and `viewport`);
   a pane's `browser` names its page. Click a page to type in it; global keys still work.
-  Pages are http, https or about:blank. `profile: "agent"` opens a separate test
-  profile; the person can let agents drive it (`agent-browser`): the pane header's
-  "Allow agent…" opens a macOS dialog, and only its Allow turns access on. An agent-profile
-  browser needs an id shaped like Herdr's (`b` and 1-9 digits): a layout block with another id
-  doesn't open. Only the shape is checked; any such id opens.
-  `browser.agent_access {browser, on: false}` turns it off; nothing else turns it on
-  (not `run()`, not the socket, not the header alone; a `dev-agent-access` test build,
-  which says so in the pane, also takes the socket). The header is a status marker only.
+  Pages are http, https or about:blank. Every browser uses the person's own profile
+  (cookies and sign-ins included), and `agent-browser` can drive any of them with no
+  prompt. `herdr-app ls` and `browsers()` show a page's full url and title.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {index | terminal}` (index: position in
   the agents list, 1 = first; the agents mod numbers its first nine rows).
 - Layout: `layout.switch {name?}`, `layout.toggle {id}`, `layout.show {id}`, `layout.hide {id}`,

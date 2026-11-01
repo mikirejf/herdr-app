@@ -1,7 +1,7 @@
 // A browser pane's header (the pane mod's, for a pane with PaneInfo.browser):
 // back, forward, reload, the address, zoom, the viewport, open in the default
 // browser, DevTools. Only commands any mod may run. The address is what
-// browsers() gives (no query or fragment unless agent access is on). Enter
+// browsers() gives. Enter
 // goes there and hands the keyboard back to the page; Esc puts the page's
 // address back. Zoom (- NN% +, the percent resets it) and the viewport button
 // (Fit, Phone, Tablet in turn) show while the header is hovered, or while they
