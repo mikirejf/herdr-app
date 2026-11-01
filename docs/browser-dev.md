@@ -194,6 +194,18 @@ right-click and typing (the keyboard must stay where you left it). It writes you
   dropped and you sign in again (only test homes had such a profile). The app home, `browser/` and the profile
   are created `0700`; the control socket is `0600` and drops a peer running
   as another user.
+- The "..." at the right end of the tab row opens a popup menu (`defaults/mods/pane/browser-menu.js`,
+  a popup of the `pane` mod): Save screenshot (`browser.screenshot`), a Cookies section (cookie
+  import joins it), and Clear browsing data in the theme's red, which asks through the `confirm`
+  mod first (`browser.clear_data`). While the popup overlaps the page, the page is hidden.
+  Both commands talk to the page through Herdr's own DevTools calls (ids from
+  1,000,000,000, answered to their callers in `runtime.rs`, never to an agent), so they need no
+  agent connection. A screenshot is `Page.captureScreenshot` (png) of what the tab shows. Clearing
+  deletes every cookie through the profile's cookie manager (`delete_cookies` says how many), then
+  sends `Network.clearBrowserCache` and `Storage.clearDataForOrigin` (all storage types) for
+  each origin a tab shows, then reloads the tabs. The command answers when Chromium has
+  (the control socket waits up to 5 s). Origins no tab shows keep their site storage (cookies
+  are gone for all of them).
 - One URL gate covers `browser.open`, `browser.navigate`, a restored
   block's url, popups and an agent's `Page.navigate`: `http`, `https` and
   `about:blank` only. A popup from a frame of another origin needs a click.

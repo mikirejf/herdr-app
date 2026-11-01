@@ -593,7 +593,13 @@ The main ones:
   `browser.devtools {browser, open?}`, `browser.zoom {step?: "in"|"out"|"reset", level?: 25-500,
   browser?}` (percent, Chromium's steps; kept per host), `browser.viewport {preset?: "phone"|"tablet"|"fit",
   width?, height?, mobile?, browser?}` (responsive size; zoom and viewport default to the focused
-  browser; an agent's own Emulation override replaces it, last one wins). `herdr-app ls` and `browsers()` list them
+  browser; an agent's own Emulation override replaces it, last one wins),
+  `browser.screenshot {browser?, path?}` (a PNG of the shown tab's page, saved to `path`, absolute or
+  `~/…`; default `~/Downloads/<host>-<YYYYMMDD-HHMMSS>.png`; says the path; an empty tab refuses) and
+  `browser.clear_data {}` (signs the person out of everything in Herdr's browser: every cookie of the
+  profile, the HTTP cache and the site storage of every site open in a tab, then reloads the tabs;
+  says `cookies_deleted`; no confirmation: the "..." menu asks first, an agent should too).
+  `herdr-app ls` and `browsers()` list them
   (with `zoom` and `viewport`, and every tab as `tabs: [{id, url, title, loading}]` with the shown one's
   index as `active`; the other fields describe the shown tab, and navigate, back, forward, reload, zoom,
   viewport and DevTools act on it; a tab's page is created when it is first shown or an agent attaches
@@ -818,7 +824,9 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   example pane header, not used by the default layouts; a browser pane gets
   a tab strip, back, forward, reload, an address field, zoom, a viewport picker and DevTools from its
   `browser.js` (its header is one row taller, for the tabs): every browser pane of a tab
-  shows this header, in every layout, whatever header the layout gives terminal panes), and `worktree`
+  shows this header, in every layout, whatever header the layout gives terminal panes; the
+  tab row's "..." opens a menu (`browser-menu.js`, a popup of this mod with props
+  `{menu: "browser", browser}`): Save screenshot, Clear browsing data after a confirmation), and `worktree`
   (git worktrees as spaces: the space menu's and the + menu's New worktree,
   Open worktree (the repo's checkouts, filtered; one already shown is gone
   to) and Remove worktree open it as a dialog with props `{space, folder?,

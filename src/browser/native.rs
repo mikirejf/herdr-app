@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use super::agent::{self, Caller, Candidate};
 use super::registry::{self, Page, Registry};
-use super::{Hand, Look, Responder, Update, emulate, engine, proxy, view};
+use super::{Hand, Look, Responder, Update, capture, emulate, engine, proxy, view};
 use crate::layout::Node;
 use crate::model::Model;
 use crate::settings::z;
@@ -248,6 +248,23 @@ impl Browsers {
             }
             other => Err(format!("{other} is not a browser command")),
         }
+    }
+
+    /// browser.screenshot: a PNG of the shown tab's page, saved where `path` says
+    /// (default ~/Downloads/<host>-<time>.png). `done` gets the file's path once Chromium answered.
+    pub fn screenshot(&mut self, browser: &str, args: &Value, done: super::Done) -> Result<(), String> {
+        let tab = self.shown_page("browser.screenshot", browser)?;
+        let url = self.registry.get(browser).map(|e| e.page().url.clone()).unwrap_or_default();
+        let home = std::env::var("HOME").map_err(|_| "HOME is unset".to_owned())?;
+        let path = capture::screenshot_path(args.get("path").and_then(Value::as_str), &url, &home, &capture::local_stamp())?;
+        engine::screenshot(&tab, path, done);
+        Ok(())
+    }
+
+    /// browser.clear_data: the profile's cookies, cache and the open pages' site storage.
+    pub fn clear_data(&mut self, done: super::Done) -> Result<(), String> {
+        engine::clear_data(done);
+        Ok(())
     }
 
     /// browser.tab.new / select / close. The window saves the block's tabs and

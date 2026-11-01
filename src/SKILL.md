@@ -138,7 +138,10 @@ starts, so export it with a new `AGENT_BROWSER_SESSION` name. Open a browser wit
 `herdr-app do browser.open --url <url>` only when asked.
 The person's zoom and responsive size are `browser.zoom` and `browser.viewport`;
 your own `agent-browser set viewport` / `set device` work too, and the last one
-set wins. When your connection ends, Herdr undoes what you set on the pages
+set wins. `browser.screenshot {browser?, path?}` saves a PNG of the shown tab's page
+(default `~/Downloads/<host>-<YYYYMMDD-HHMMSS>.png`) and says the path. `browser.clear_data`
+signs the person out of everything in the Herdr browser (all cookies, the cache, the site
+storage of the open sites, then reloads the tabs): run it only when asked. When your connection ends, Herdr undoes what you set on the pages
 (overrides, headers, enabled domains) and keeps the page as it is: no reload.
 
 ## Problems and safety

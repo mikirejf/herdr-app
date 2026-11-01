@@ -17,11 +17,15 @@
 //! `devtools`, `zoom`, `set_zoom`, `set_viewport`, `page_view`, `fit`,
 //! `set_focus`, `pressed`, `agent_event`, `clicked_herdr`, `covers_changed`, `wake`,
 //! `send_devtools` (an allowed CDP message from proxy.rs), `tab_op` (a tab change
-//! an agent asked for, which comes back as an `Event`) and `agent_gone`.
+//! an agent asked for, which comes back as an `Event`), `agent_gone`, and the
+//! two commands that wait for Chromium: `screenshot` and `clear_data` (each gets a
+//! [`Done`] called with the answer).
 //! Page events and answers go back through `proxy::from_page`.
 
 #[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 pub mod agent;
+#[cfg(any(test, all(target_os = "macos", feature = "browser")))]
+pub mod capture;
 #[cfg(any(test, all(target_os = "macos", feature = "browser")))]
 pub mod emulate;
 #[cfg(any(test, all(target_os = "macos", feature = "browser")))]
@@ -46,6 +50,10 @@ pub use native::{Browsers, Event};
 mod off;
 #[cfg(not(all(target_os = "macos", feature = "browser")))]
 pub use off::{Browsers, Event};
+
+/// What a command that waits for Chromium (`browser.screenshot`,
+/// `browser.clear_data`) calls with its answer, on the main thread.
+pub type Done = Box<dyn FnOnce(Result<serde_json::Value, String>)>;
 
 /// What the window does after a browser reported something.
 #[derive(Debug, Default)]

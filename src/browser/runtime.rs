@@ -8,6 +8,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::ffi::{CString, c_int};
 use std::ptr::NonNull;
 use std::os::unix::ffi::OsStrExt as _;
@@ -21,6 +22,7 @@ use objc2::{MainThreadMarker, msg_send};
 use objc2_app_kit::NSView;
 
 use super::agent;
+use super::{Done, capture};
 use super::emulate::{self, Viewport};
 use super::native::Event;
 use super::proxy;
@@ -95,8 +97,14 @@ thread_local! {
     /// Herdr's own DevTools request ids (`browser.viewport`): far above the
     /// agent proxy's, which count up from 1, so an answer to one of them is
     /// never an agent's (the proxy drops ids it didn't send).
-    static OWN_ID: Cell<i64> = const { Cell::new(1_000_000_000) };
+    static OWN_ID: Cell<i64> = const { Cell::new(OWN_ID_BASE) };
+    /// Who waits for the answer to each of Herdr's own DevTools calls (`call_own`).
+    static OWN_CALLS: RefCell<HashMap<i64, Done>> = RefCell::new(HashMap::new());
 }
+
+/// Where Herdr's own DevTools request ids start.
+const OWN_ID_BASE: i64 = 1_000_000_000;
+
 
 /// `on_schedule_message_pump_work` → the foreground pump task.
 static PUMP: OnceLock<async_channel::Sender<i64>> = OnceLock::new();
@@ -310,21 +318,30 @@ pub fn wake() {
 /// Sends one DevTools message (JSON, already allowed by the proxy) to
 /// browser `id`'s page, watching its answers first. False: no page now.
 pub fn send_devtools(id: &str, message: &[u8]) -> bool {
-    let Some((b, generation)) = STATE.with_borrow(|s| {
-        s.browsers.iter().find(|o| o.id == id && s.is_current(&o.id, o.generation)).map(|o| (o.browser.clone(), o.generation))
-    }) else {
-        return false;
-    };
+    let Some((b, generation)) = current(id) else { return false };
     let Some(host) = b.host() else { return false };
+    watch(&b, &host, id, generation) && host.send_dev_tools_message(Some(message)) == 1
+}
+
+/// Browser `id`'s current open: its CEF browser and generation.
+fn current(id: &str) -> Option<(Browser, u64)> {
+    STATE.with_borrow(|s| s.browsers.iter().find(|o| o.id == id && s.is_current(&o.id, o.generation)).map(|o| (o.browser.clone(), o.generation)))
+}
+
+/// Starts watching a page's DevTools answers, once per CEF browser. False: CEF refused.
+fn watch(b: &Browser, host: &BrowserHost, id: &str, generation: u64) -> bool {
     let cef = b.identifier();
-    if !STATE.with_borrow(|s| s.observers.contains_key(&cef)) {
-        let mut observer = HerdrDevTools::new(id.to_owned(), generation);
-        match host.add_dev_tools_message_observer(Some(&mut observer)) {
-            Some(r) => STATE.with_borrow_mut(|s| s.observers.insert(cef, r)),
-            None => return false,
-        };
+    if STATE.with_borrow(|s| s.observers.contains_key(&cef)) {
+        return true;
     }
-    host.send_dev_tools_message(Some(message)) == 1
+    let mut observer = HerdrDevTools::new(id.to_owned(), generation);
+    match host.add_dev_tools_message_observer(Some(&mut observer)) {
+        Some(r) => {
+            STATE.with_borrow_mut(|s| s.observers.insert(cef, r));
+            true
+        }
+        None => false,
+    }
 }
 
 /// An agent asked the window to change `browser`'s tabs (main thread, from
@@ -359,13 +376,177 @@ pub fn agent_gone(id: &str) {
 /// One DevTools call of Herdr's own to `host`'s page, under an id the agent
 /// proxy never uses.
 fn send_own(host: &BrowserHost, id: &str, method: &str, params: serde_json::Value) -> Result<(), String> {
+    send_numbered(host, id, next_own_id(), method, params)
+}
+
+fn next_own_id() -> i64 {
     let own = OWN_ID.get();
     OWN_ID.set(own + 1);
+    own
+}
+
+fn send_numbered(host: &BrowserHost, id: &str, own: i64, method: &str, params: serde_json::Value) -> Result<(), String> {
     let message = serde_json::json!({ "id": own, "method": method, "params": params }).to_string();
     if host.send_dev_tools_message(Some(message.as_bytes())) != 1 {
         return Err(format!("Chromium didn't take {method} for browser {id}", id = super::log_safe(id)));
     }
     Ok(())
+}
+
+/// A DevTools call of Herdr's own to browser `id`'s page; `done` gets Chromium's
+/// answer (its `result`, or its error's message), or why the call never went.
+/// The same in-process session an agent uses, so it needs no agent connection.
+fn call_own(id: &str, method: &str, params: serde_json::Value, done: Done) {
+    let Some((b, generation)) = current(id) else { return done(Err(format!("browser {} is still opening", super::log_safe(id)))) };
+    let Some(host) = b.host() else { return done(Err("the browser has no host".into())) };
+    if !watch(&b, &host, id, generation) {
+        return done(Err(format!("Chromium would not let Herdr watch browser {}", super::log_safe(id))));
+    }
+    let own = next_own_id();
+    // Before sending: Chromium may answer within the call.
+    OWN_CALLS.with_borrow_mut(|c| c.insert(own, done));
+    if let Err(e) = send_numbered(&host, id, own, method, params)
+        && let Some(done) = OWN_CALLS.with_borrow_mut(|c| c.remove(&own))
+    {
+        done(Err(e));
+    }
+}
+
+/// The id of an answer to one of Herdr's own calls (Chromium writes `id` first), else None.
+fn own_answer_id(message: &[u8]) -> Option<i64> {
+    let rest = message.strip_prefix(b"{\"id\":")?;
+    let digits = rest.iter().position(|b| !b.is_ascii_digit())?;
+    let id: i64 = std::str::from_utf8(&rest[..digits]).ok()?.parse().ok()?;
+    (id >= OWN_ID_BASE).then_some(id)
+}
+
+fn answer_own(id: i64, message: &[u8]) {
+    let Some(done) = OWN_CALLS.with_borrow_mut(|c| c.remove(&id)) else { return };
+    let answer = serde_json::from_slice::<serde_json::Value>(message).map_err(|e| format!("Chromium's answer was not JSON: {e}")).and_then(|v| match v.get("error") {
+        Some(e) => Err(e.get("message").and_then(serde_json::Value::as_str).unwrap_or("Chromium refused").to_owned()),
+        None => Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null)),
+    });
+    done(answer);
+}
+
+/// A PNG of browser `id`'s page as it shows, written to `path`; `done` gets
+/// `{ path, bytes }`.
+pub fn screenshot(id: &str, path: std::path::PathBuf, done: Done) {
+    call_own(id, "Page.captureScreenshot", serde_json::json!({ "format": "png" }), Box::new(move |answer| {
+        done(answer.and_then(|result| {
+            let png = capture::png_of(&result)?;
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+            }
+            std::fs::write(&path, &png).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+            tracing::info!("browser: screenshot of a page saved ({} bytes)", png.len());
+            Ok(serde_json::json!({ "path": path, "bytes": png.len() }))
+        }));
+    }));
+}
+
+type CookiesDone = Rc<RefCell<Option<Box<dyn FnOnce(Result<c_int, String>)>>>>;
+
+wrap_delete_cookies_callback! {
+    struct CookiesDeleted {
+        slot: CookiesDone,
+    }
+
+    impl DeleteCookiesCallback {
+        fn on_complete(&self, num_deleted: c_int) {
+            let next = self.slot.borrow_mut().take();
+            if let Some(next) = next {
+                next(Ok(num_deleted));
+            }
+        }
+    }
+}
+
+/// Signs the person out of everywhere in the profile: every cookie, then the
+/// HTTP cache and the site storage of each origin a tab shows (DevTools), then
+/// the open tabs reload. `done` gets what was cleared.
+pub fn clear_data(done: Done) {
+    if phase() != Phase::Ready {
+        return done(Err("the browser engine isn't running: open a browser page first".into()));
+    }
+    let Some(manager) = cookie_manager_get_global_manager(None) else { return done(Err("Chromium has no cookie manager".into())) };
+    let after: Box<dyn FnOnce(Result<c_int, String>)> = Box::new(move |deleted| match deleted {
+        Ok(cookies) => clear_site_data(cookies, done),
+        Err(e) => done(Err(e)),
+    });
+    let slot: CookiesDone = Rc::new(RefCell::new(Some(after)));
+    let mut callback = CookiesDeleted::new(slot.clone());
+    if manager.delete_cookies(None, None, Some(&mut callback)) != 1 {
+        let next = slot.borrow_mut().take();
+        if let Some(next) = next {
+            next(Err("Chromium could not reach the profile's cookies".into()));
+        }
+    }
+}
+
+/// The second half of `clear_data`: the cache and the open origins' storage, then a reload of each tab.
+fn clear_site_data(cookies: c_int, done: Done) {
+    let open: Vec<(String, String)> = STATE.with_borrow(|s| {
+        s.browsers
+            .iter()
+            .filter(|o| s.is_current(&o.id, o.generation))
+            .map(|o| (o.id.clone(), s.pages.get(&o.id).map(|p| p.url.clone()).unwrap_or_default()))
+            .collect()
+    });
+    let mut calls: Vec<(String, &'static str, serde_json::Value)> = Vec::new();
+    // The cache is one for the whole profile: any tab can clear it.
+    if let Some((id, _)) = open.first() {
+        calls.push((id.clone(), "Network.clearBrowserCache", serde_json::json!({})));
+    }
+    let mut origins: Vec<String> = Vec::new();
+    for (id, url) in &open {
+        if let Some(origin) = capture::origin_of(url)
+            && !origins.contains(&origin)
+        {
+            calls.push((id.clone(), "Storage.clearDataForOrigin", serde_json::json!({ "origin": origin, "storageTypes": "all" })));
+            origins.push(origin);
+        }
+    }
+    let cache = !open.is_empty();
+    let tabs: Vec<String> = open.into_iter().map(|(id, _)| id).collect();
+    let problems: Rc<RefCell<Vec<String>>> = Rc::default();
+    let finish = {
+        let problems = problems.clone();
+        Rc::new(RefCell::new(Some(move || {
+            let reloaded = tabs.iter().filter(|t| reload(t).is_ok()).count();
+            let problems = problems.borrow().clone();
+            let mut report = serde_json::json!({ "cookies_deleted": cookies, "cache_cleared": cache && problems.is_empty(), "origins": origins, "tabs_reloaded": reloaded });
+            if !problems.is_empty() {
+                report["problems"] = serde_json::json!(problems);
+            }
+            tracing::info!("browser: browsing data cleared: {cookies} cookies, {} origins, {reloaded} tabs reloaded", origins.len());
+            done(Ok(report));
+        })))
+    };
+    if calls.is_empty() {
+        let run = finish.borrow_mut().take();
+        if let Some(run) = run {
+            run();
+        }
+        return;
+    }
+    let left = Rc::new(Cell::new(calls.len()));
+    for (id, method, params) in calls {
+        let (left, problems, finish) = (left.clone(), problems.clone(), finish.clone());
+        call_own(&id, method, params, Box::new(move |answer| {
+            if let Err(e) = answer {
+                tracing::warn!("browser: {method} failed: {}", super::log_escaped(&e));
+                problems.borrow_mut().push(format!("{method}: {e}"));
+            }
+            left.set(left.get() - 1);
+            if left.get() == 0 {
+                let run = finish.borrow_mut().take();
+                if let Some(run) = run {
+                    run();
+                }
+            }
+        }));
+    }
 }
 
 fn phase() -> Phase {
@@ -1144,8 +1325,9 @@ wrap_download_handler! {
     }
 }
 
-// The agent's side of a page's DevTools session: every answer and event
-// goes to the proxy, which passes on only this agent's own.
+// A page's DevTools session as Herdr sees it: the answers to Herdr's own calls
+// go to their callers; every other answer and event goes to the proxy, which
+// passes on only an agent's own.
 wrap_dev_tools_message_observer! {
     struct HerdrDevTools {
         id: String,
@@ -1154,10 +1336,13 @@ wrap_dev_tools_message_observer! {
 
     impl DevToolsMessageObserver {
         fn on_dev_tools_message(&self, _browser: Option<&mut Browser>, message: Option<&[u8]>) -> c_int {
-            if let Some(message) = message
-                && is_current(&self.id, self.generation)
-            {
-                proxy::from_page(&self.id, message);
+            if let Some(message) = message {
+                // Herdr's own calls (screenshot, clear data) answer to whoever made them.
+                if let Some(own) = own_answer_id(message) {
+                    answer_own(own, message);
+                } else if is_current(&self.id, self.generation) {
+                    proxy::from_page(&self.id, message);
+                }
             }
             1
         }

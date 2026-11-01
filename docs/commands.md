@@ -286,6 +286,21 @@ Lay a browser's page out at another screen size (default: the focused browser): 
 | `height` | no |
 | `mobile` | no |
 
+## `browser.screenshot`
+
+Save a PNG of a browser's shown page as it looks (default: the focused browser) to path (absolute or ~/…; default ~/Downloads/<host>-<YYYYMMDD-HHMMSS>.png). Says the path. An empty tab has no page: it refuses.
+
+| Argument | Required |
+|---|---|
+| `browser` | no |
+| `path` | no |
+
+## `browser.clear_data`
+
+Sign out of everywhere in Herdr's browser: delete every cookie of its profile, clear the HTTP cache and the site storage (local storage, IndexedDB, caches) of every site open in a tab, then reload the open tabs. Says how many cookies it deleted. The Browser menu's "Clear browsing data" asks first; this does not.
+
+No arguments.
+
 ## `space.select`
 
 Show a space (by position or id).

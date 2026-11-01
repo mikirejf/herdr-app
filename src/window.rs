@@ -443,6 +443,9 @@ pub struct AppWindow {
     person: settings::Person,
     /// What the last command made or why it didn't (for callers that wait for it).
     reply: Option<Value>,
+    /// Who waits on the control socket for the command being run: a command
+    /// Chromium answers later (`later`) takes it and answers when it can.
+    reply_to: Option<std::sync::mpsc::Sender<Value>>,
     /// The `where` label last written per terminal address.
     written_where: HashMap<String, String>,
     watched: Watched,
@@ -538,6 +541,7 @@ impl AppWindow {
             written_view: String::new(),
             person: settings::Person::default(),
             reply: None,
+            reply_to: None,
             written_where: HashMap::new(),
             watched: Watched::default(),
             live: HashMap::new(),
@@ -2834,6 +2838,33 @@ impl AppWindow {
         self.reply = Some(r.unwrap_or_else(|e| json!({ "error": e })));
     }
 
+    /// What a command Chromium answers later calls when it has: the answer goes
+    /// to whoever waits on the control socket for it, else (a key, a menu) it
+    /// shows as a toast. The second value gives the waiting caller back if the
+    /// command fails before it started.
+    fn later(&mut self, name: &str) -> (crate::browser::Done, std::rc::Rc<std::cell::RefCell<Option<std::sync::mpsc::Sender<Value>>>>) {
+        let waiting = std::rc::Rc::new(std::cell::RefCell::new(self.reply_to.take()));
+        let slot = waiting.clone();
+        let name = name.to_owned();
+        let done: crate::browser::Done = Box::new(move |answer| {
+            if let Err(e) = &answer {
+                tracing::warn!("{name}: {}", crate::browser::log_escaped(e));
+            }
+            let caller = slot.borrow_mut().take();
+            if let Some(tx) = caller {
+                let _ = tx.send(answer.unwrap_or_else(|e| json!({ "error": e })));
+                return;
+            }
+            let notification = match answer {
+                Ok(v) if name == "browser.screenshot" => json!({ "title": "Screenshot saved", "body": v["path"], "level": "success" }),
+                Ok(v) => json!({ "title": "Browsing data cleared", "body": format!("{} cookies deleted", v["cookies_deleted"]), "level": "success" }),
+                Err(e) => json!({ "title": format!("{name} failed"), "body": e, "level": "error" }),
+            };
+            mods::request(mods::Request::OpenOverlay { id: mods::new_overlay_id(), spec: json!({ "kind": "toast", "notification": notification }) });
+        });
+        (done, waiting)
+    }
+
     fn fail(&mut self, message: impl Into<String>) {
         self.answer(Err(message.into()));
     }
@@ -3277,6 +3308,18 @@ impl AppWindow {
                 // A url typed into an empty tab opens its page: that is a sync's reconcile.
                 if !navigated {
                     return;
+                }
+            }
+            "browser.screenshot" | "browser.clear_data" => {
+                let b = Self::owned(a, "browser").or_else(|| self.focused_browser()).unwrap_or_default();
+                let (done, waiting) = self.later(name);
+                let r = if name == "browser.screenshot" { self.browsers.screenshot(&b, a, done) } else { self.browsers.clear_data(done) };
+                match r {
+                    Ok(()) => self.reply = Some(json!({ "pending": true })),
+                    Err(e) => {
+                        self.reply_to = waiting.borrow_mut().take();
+                        self.fail(e);
+                    }
                 }
             }
             "browser.tab.new" | "browser.tab.select" | "browser.tab.close" => {
@@ -3792,7 +3835,12 @@ impl AppWindow {
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
             Request::Refresh => self.refresh_mods(cx),
             Request::Control { cmd, reply } => {
-                let _ = reply.send(self.control(cmd, window, cx));
+                self.reply_to = Some(reply);
+                let answer = self.control(cmd, window, cx);
+                // Still here: answered now. Taken: a command Chromium answers later has it.
+                if let Some(reply) = self.reply_to.take() {
+                    let _ = reply.send(answer);
+                }
             }
         }
         // Whatever the request changed (a tab, a popup, a restore), the keyboard follows.

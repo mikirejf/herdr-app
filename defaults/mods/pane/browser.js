@@ -12,11 +12,13 @@
 // pointer first crosses it.
 // Above the bar, a row of tabs (TAB_ROW tall; the app makes a browser pane's
 // header that much taller): each shows its title, an x on hover and on the
-// shown tab, and a + opens a new one. A new empty tab gives the address field the keyboard.
+// shown tab, and a + opens a new one; a "..." at the row's right end opens the
+// browser menu (browser-menu.js). A new empty tab gives the address field the keyboard.
 
 import { div, svg } from "gpui-kit";
 import { h_flex, InputState, Input } from "gpui-base";
-import { browsers, run } from "herdr";
+import { browsers, run, openOverlay } from "herdr";
+import { MENU_WIDTH, MENU_HEIGHT } from "./browser-menu.js";
 
 /** What the person typed, as a url: with a scheme as is; a host gets https://
  *  (http:// for localhost and 127.0.0.1); anything else is a search. */
@@ -34,9 +36,6 @@ export function address(text) {
 
 /** The tab row's height (px): the app adds it to a browser pane's header (BROWSER_TABS_HEIGHT in window.rs). */
 export const TAB_ROW = 28;
-
-/** The room the tab row keeps at its right end (px), for a menu button. */
-const TAB_ROW_END = 34;
 
 /** What a tab shows: its title; before it has one, the host it loads; "New tab" when empty. */
 export function tabTitle(tab) {
@@ -179,25 +178,63 @@ export default class BrowserBar {
       .w_full()
       .h(TAB_ROW)
       .pl(6)
-      .pr(TAB_ROW_END)
+      .pr(6)
       .gap(3)
       .items_center();
     tabs.forEach((x, i) => { row = row.child(this.tab(t, pane, x, i, i === active)); });
-    return row.child(
-      div()
-        .id(`pt-new-${pane}`)
-        .flex_none()
-        .p(4)
-        .rounded(5)
-        .text_color(t.dim)
-        .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .on_click((_e, cx) => {
-          cx.stop_propagation();
-          run("pane.focus", { pane });
-          run("browser.tab.new", { browser: p.browser });
-        })
-        .child(svg("mods/pane/plus.svg").size(14)));
+    return row.child(this.plus(t, p)).child(this.more(t, p));
+  }
+
+  // The "..." button: opens the browser menu under it, its right edge on the button's.
+  more(t, p) {
+    const pane = p.pane;
+    return div()
+      .id(`pt-more-${pane}`)
+      .flex_none()
+      // What the tabs leave free goes left of it.
+      .ml_auto()
+      .p(4)
+      .rounded(5)
+      .text_color(t.dim)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_mouse_down("left", (e, cx) => {
+        cx.stop_propagation();
+        this.moreBounds = e.bounds;
+      })
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        const b = this.moreBounds;
+        if (!b) return;
+        run("pane.focus", { pane });
+        openOverlay({
+          mod: "pane",
+          kind: "popup",
+          width: MENU_WIDTH,
+          height: MENU_HEIGHT,
+          at: { x: b.x + b.width - MENU_WIDTH, y: b.y + b.height + 2 },
+          props: { menu: "browser", browser: p.browser },
+        });
+      })
+      .child(svg("mods/pane/more.svg").size(14));
+  }
+
+  // The + button: a new tab after the shown one.
+  plus(t, p) {
+    const pane = p.pane;
+    return div()
+      .id(`pt-new-${pane}`)
+      .flex_none()
+      .p(4)
+      .rounded(5)
+      .text_color(t.dim)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        run("pane.focus", { pane });
+        run("browser.tab.new", { browser: p.browser });
+      })
+      .child(svg("mods/pane/plus.svg").size(14));
   }
 
   button(t, id, icon, command, on, args = {}) {

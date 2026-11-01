@@ -63,6 +63,10 @@ pub const COMMANDS: &[Command] = &[
         "Zoom a browser's page (default: the focused browser): step \"in\" or \"out\" along Chromium's steps (25% to 500%), \"reset\" to 100%, or level, a percent from 25 to 500. Chromium keeps one zoom per host name (all its ports) in the profile, saved across restarts, so other pages on that host follow. A number alone (browser.zoom:125) is a level. Says the zoom now, in percent."),
     cmd("browser.viewport", &[opt("preset"), opt("browser"), opt("width"), opt("height"), opt("mobile")],
         "Lay a browser's page out at another screen size (default: the focused browser): preset \"phone\" (390x844), \"tablet\" (820x1180), both mobile with touch, or \"fit\" (the pane's own size again); or width and height in pixels, with mobile true or false. A size bigger than the pane is shrunk to fit it."),
+    cmd("browser.screenshot", &[opt("browser"), opt("path")],
+        "Save a PNG of a browser's shown page as it looks (default: the focused browser) to path (absolute or ~/…; default ~/Downloads/<host>-<YYYYMMDD-HHMMSS>.png). Says the path. An empty tab has no page: it refuses."),
+    cmd("browser.clear_data", &[],
+        "Sign out of everywhere in Herdr's browser: delete every cookie of its profile, clear the HTTP cache and the site storage (local storage, IndexedDB, caches) of every site open in a tab, then reload the open tabs. Says how many cookies it deleted. The Browser menu's \"Clear browsing data\" asks first; this does not."),
     // What you see.
     cmd("space.select", &[opt("index"), opt("id")], "Show a space (by position or id)."),
     cmd("space.next", &[], "Show the next space."),

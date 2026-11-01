@@ -40,6 +40,14 @@ impl Browsers {
         Err(UNAVAILABLE.into())
     }
 
+    pub fn screenshot(&mut self, _browser: &str, _args: &Value, _done: super::Done) -> Result<(), String> {
+        Err(UNAVAILABLE.into())
+    }
+
+    pub fn clear_data(&mut self, _done: super::Done) -> Result<(), String> {
+        Err(UNAVAILABLE.into())
+    }
+
     pub fn tab_command(&mut self, _name: &str, _browser: &str, _args: &Value) -> Result<Value, String> {
         Err(UNAVAILABLE.into())
     }

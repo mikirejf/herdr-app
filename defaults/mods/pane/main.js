@@ -5,11 +5,13 @@
 // this pane. Props from the app: { pane, terminal }. Click: focus the pane.
 // A browser pane gets the browser bar (browser.js) in place of icon, name and folder,
 // under a row of tabs (the app makes its header taller for it).
+// Opened as a popup with props { menu: "browser", browser } it is that tab row's "..." menu instead.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { panes, props, run, theme, home } from "herdr";
 import BrowserBar from "./browser.js";
+import BrowserMenu from "./browser-menu.js";
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -23,8 +25,12 @@ function folder(cwd) {
 }
 
 export default class Pane extends View {
-  init(p) {
+  init(p, cx) {
     this.hovered = false;
+    if ((props() ?? p)?.menu === "browser") {
+      this.menu = new BrowserMenu(cx);
+      return;
+    }
     // A browser pane has no terminal. A mod pane has none either; it never shows the bar.
     if ((props() ?? p)?.terminal == null) this.bar = new BrowserBar();
   }
@@ -49,6 +55,7 @@ export default class Pane extends View {
 
   render(cx) {
     const t = theme();
+    if (this.menu) return this.menu.render(t);
     const p = this.me();
     if (!p) return div();
     const pane = p.pane;
