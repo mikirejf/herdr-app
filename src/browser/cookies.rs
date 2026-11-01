@@ -117,6 +117,33 @@ fn finish(progress: &Shared) {
     }
 }
 
+/// Flushes the profile's cookies to disk, then calls `done`.
+pub fn flush(manager: &CookieManager, done: Box<dyn FnOnce()>) {
+    let done = Rc::new(RefCell::new(Some(done)));
+    let mut callback = FlushedAlone::new(done.clone());
+    if manager.flush_store(Some(&mut callback)) != 1 {
+        let done = done.borrow_mut().take();
+        if let Some(done) = done {
+            done();
+        }
+    }
+}
+
+wrap_completion_callback! {
+    struct FlushedAlone {
+        done: Rc<RefCell<Option<Box<dyn FnOnce()>>>>,
+    }
+
+    impl CompletionCallback {
+        fn on_complete(&self) {
+            let done = self.done.borrow_mut().take();
+            if let Some(done) = done {
+                done();
+            }
+        }
+    }
+}
+
 /// A host-only cookie has an empty domain, so Chromium keeps it a host cookie.
 fn to_cef(cookie: &Cookie) -> cef::Cookie {
     use cef::sys::{cef_cookie_priority_t as P, cef_cookie_same_site_t as S};

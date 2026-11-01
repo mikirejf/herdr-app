@@ -915,6 +915,15 @@ pub fn shutdown() {
     };
     // A browser still being created can't be closed yet.
     pump_until(&|s| s.phase != Phase::Starting && s.creating == 0);
+    // Chromium batches cookie writes: get them to disk before CEF goes down.
+    if phase() == Phase::Ready
+        && let Some(manager) = cookie_manager_get_global_manager(None)
+    {
+        let flushed = Rc::new(Cell::new(false));
+        let flag = flushed.clone();
+        super::cookies::flush(&manager, Box::new(move || flag.set(true)));
+        pump_until(&|_| flushed.get());
+    }
     // Those already closing finish on their own.
     let browsers = STATE.with_borrow_mut(|s| {
         s.phase = Phase::Closing;

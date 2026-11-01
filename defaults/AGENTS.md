@@ -826,8 +826,8 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
 - The defaults are mods too, read them as examples: `spaces`, `agents`,
   `tabs` (the tab bar), `menu`, `prompt`, `confirm`, `help`, `toast`,
   `cookie-import` (the two dialogs that bring cookies over from another browser),
-  Terminals' `picker`, `peek`, and `pane` (an
-  example pane header, not used by the default layouts; a browser pane gets
+  Terminals' `picker`, `peek`, and `pane` (the pane header of the default
+  layouts; a browser pane gets
   a tab strip, back, forward, reload, an address field, zoom, a viewport picker and DevTools from its
   `browser.js` (its header is one row taller, for the tabs): every browser pane of a tab
   shows this header, in every layout, whatever header the layout gives terminal panes; the

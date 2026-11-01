@@ -219,6 +219,8 @@ right-click and typing (the keyboard must stay where you left it). It writes you
   cookies Chromium refused. Started before the engine is ready, the import waits for it
   (`when_ready`). Debug builds read profiles from `$HERDR_COOKIE_IMPORT_ROOT` (laid out like
   `~/Library/Application Support`) instead of the real ones: use fixtures for tests.
+- The cookie store is flushed to disk on quit (Chromium batches writes), so a session
+  cookie set moments before quitting survives the restart.
 - One URL gate covers `browser.open`, `browser.navigate`, a restored
   block's url, popups and an agent's `Page.navigate`: `http`, `https` and
   `about:blank` only. A popup from a frame of another origin needs a click.
