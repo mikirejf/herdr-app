@@ -17,16 +17,43 @@ pub enum Content {
     Context { tab: String, pane: Option<PaneFrame> },
     /// An agent's terminal, full size (`"focused"`: the selected agent).
     Agent { agent: String },
-    /// A web page (macOS builds with a browser engine; a placeholder
-    /// elsewhere). `browser` is the app's id for it (`b1`); `url` is where it
-    /// was last, so a block whose browser isn't open (a restart, another
-    /// screen) opens there again. Saved as a mod block named [`BROWSER_MOD`], so a herdr-app without
+    /// Web pages (macOS builds with a browser engine; a placeholder
+    /// elsewhere). `browser` is the app's id for it (`b1`); `tabs` are the
+    /// urls of its tabs, in order (`""`: an empty tab), and `active` the shown
+    /// one, so a block whose browser isn't open (a restart, another screen)
+    /// opens there again. Never empty, and `active` is in range: [`browser_tabs`]
+    /// makes it so. Saved as a mod block named [`BROWSER_MOD`], so a herdr-app without
     /// this prototype shows that one pane as a mod that didn't load and keeps it.
-    Browser { browser: String, url: String },
+    Browser { browser: String, tabs: Vec<String>, active: usize },
+}
+
+impl Content {
+    /// A browser block with one tab at `url` (empty: an empty tab).
+    pub fn browser(browser: impl Into<String>, url: impl Into<String>) -> Content {
+        Content::Browser { browser: browser.into(), tabs: vec![url.into()], active: 0 }
+    }
+
+    /// The shown tab's saved url of a browser block (`""`: an empty tab).
+    pub fn browser_url(&self) -> Option<&str> {
+        match self {
+            Content::Browser { tabs, active, .. } => Some(tabs.get(*active).map_or("", String::as_str)),
+            _ => None,
+        }
+    }
+}
+
+/// A browser block's tabs as they must be: at least one (an empty list is one
+/// empty tab), and the active index inside them.
+pub fn browser_tabs(mut tabs: Vec<String>, active: usize) -> (Vec<String>, usize) {
+    if tabs.is_empty() {
+        tabs.push(String::new());
+    }
+    let active = active.min(tabs.len() - 1);
+    (tabs, active)
 }
 
 /// The mod name a browser block is saved under: `{ "mod": "browser-prototype",
-/// "props": { "browser": "b1", "url": "…" } }`. A mod
+/// "props": { "browser": "b1", "tabs": [{ "url": "…" }], "active": 0 } }`. A mod
 /// block by this name whose props name a browser is a browser, not a mod.
 /// Not `browser`: Herdr's own browser mod will likely take that name, and
 /// neither should read the other's blocks.
@@ -65,6 +92,15 @@ enum Saved {
 struct BrowserProps {
     browser: String,
     #[serde(default)]
+    tabs: Vec<SavedTab>,
+    #[serde(default)]
+    active: usize,
+}
+
+/// A tab as saved: its url only (titles, history and zoom are not).
+#[derive(Serialize, Deserialize)]
+struct SavedTab {
+    #[serde(default)]
     url: String,
 }
 
@@ -73,7 +109,10 @@ impl From<Saved> for Content {
         match saved {
             Saved::Terminal { terminal } => Content::Terminal { terminal },
             Saved::Mod { name, props } => match browser_props(&name, &props) {
-                Some(BrowserProps { browser, url }) => Content::Browser { browser, url },
+                Some(BrowserProps { browser, tabs, active }) => {
+                    let (tabs, active) = browser_tabs(tabs.into_iter().map(|t| t.url).collect(), active);
+                    Content::Browser { browser, tabs, active }
+                }
                 None => Content::Mod { name, props },
             },
             Saved::Context { tab, pane } => Content::Context { tab, pane },
@@ -89,10 +128,10 @@ impl From<Content> for Saved {
             Content::Mod { name, props } => Saved::Mod { name, props },
             Content::Context { tab, pane } => Saved::Context { tab, pane },
             Content::Agent { agent } => Saved::Agent { agent },
-            Content::Browser { browser, url } => Saved::Mod {
+            Content::Browser { browser, tabs, active } => Saved::Mod {
                 name: BROWSER_MOD.to_string(),
                 // A struct of strings always converts.
-                props: serde_json::to_value(BrowserProps { browser, url }).unwrap_or_default(),
+                props: serde_json::to_value(BrowserProps { browser, tabs: tabs.into_iter().map(|url| SavedTab { url }).collect(), active }).unwrap_or_default(),
             },
         }
     }
@@ -913,45 +952,64 @@ mod tests {
 
     #[test]
     fn browser_blocks_round_trip_as_panes() {
-        let json = r#"{ "id": "p1", "type": "block", "content": { "mod": "browser-prototype", "props": { "browser": "b1", "url": "https://example.com/" } } }"#;
+        let json = r#"{ "id": "p1", "type": "block", "content": { "mod": "browser-prototype", "props": { "browser": "b1", "tabs": [{ "url": "https://example.com/" }, { "url": "" }, { "url": "https://b.test/" }], "active": 2 } } }"#;
         let n: Node = serde_json::from_str(json).unwrap();
-        assert_eq!(n.content(), Some(&Content::Browser { browser: "b1".into(), url: "https://example.com/".into() }));
+        assert_eq!(n.content(), Some(&Content::Browser { browser: "b1".into(), tabs: vec!["https://example.com/".into(), String::new(), "https://b.test/".into()], active: 2 }));
         assert!(n.is_pane());
         assert_eq!(n.browser(), Some("b1"));
         let back: Node = serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
         assert_eq!(back, n);
-        // A block saved without a url still parses (it opens on a blank page).
+        assert_eq!(
+            serde_json::to_value(&n).unwrap()["content"],
+            serde_json::json!({ "mod": "browser-prototype", "props": { "browser": "b1", "tabs": [{ "url": "https://example.com/" }, { "url": "" }, { "url": "https://b.test/" }], "active": 2 } })
+        );
+        // A block saved with no tabs is one empty tab.
         let bare: Node = serde_json::from_str(r#"{ "id": "p2", "type": "block", "content": { "mod": "browser-prototype", "props": { "browser": "b2" } } }"#).unwrap();
-        assert_eq!(bare.content(), Some(&Content::Browser { browser: "b2".into(), url: String::new() }));
+        assert_eq!(bare.content(), Some(&Content::browser("b2", "")));
         // The other kinds still parse as themselves.
         let t: Node = serde_json::from_str(r#"{ "id": "t", "type": "block", "content": { "terminal": "x" } }"#).unwrap();
         assert_eq!(t.terminal(), Some("x"));
     }
 
     #[test]
-    fn a_browser_block_saved_with_an_agent_profile_still_loads_and_drops_the_prop() {
-        let json = r#"{ "id": "p1", "type": "block", "content": { "mod": "browser-prototype", "props": { "browser": "b1", "url": "https://example.com/", "profile": "agent" } } }"#;
+    fn a_browser_block_with_unknown_props_still_loads_and_drops_them() {
+        // The single `url` of the first prototype and an agent `profile` are gone.
+        let json = r#"{ "id": "p1", "type": "block", "content": { "mod": "browser-prototype", "props": { "browser": "b1", "url": "https://old.test/", "profile": "agent", "tabs": [{ "url": "https://example.com/", "title": "x" }] } } }"#;
         let n: Node = serde_json::from_str(json).unwrap();
-        assert_eq!(n.content(), Some(&Content::Browser { browser: "b1".into(), url: "https://example.com/".into() }));
+        assert_eq!(n.content(), Some(&Content::browser("b1", "https://example.com/")));
         assert_eq!(
             serde_json::to_value(&n).unwrap()["content"],
-            serde_json::json!({ "mod": "browser-prototype", "props": { "browser": "b1", "url": "https://example.com/" } })
+            serde_json::json!({ "mod": "browser-prototype", "props": { "browser": "b1", "tabs": [{ "url": "https://example.com/" }], "active": 0 } })
         );
     }
 
     #[test]
+    fn a_browser_blocks_tabs_load_as_a_valid_state() {
+        let load = |props: serde_json::Value| -> Content { serde_json::from_value(serde_json::json!({ "mod": "browser-prototype", "props": props })).unwrap() };
+        // `active` past the end is the last tab.
+        assert_eq!(
+            load(serde_json::json!({ "browser": "b1", "tabs": [{ "url": "https://a/" }, { "url": "https://b/" }], "active": 7 })),
+            Content::Browser { browser: "b1".into(), tabs: vec!["https://a/".into(), "https://b/".into()], active: 1 }
+        );
+        // An empty list is one empty tab, whatever `active` says.
+        assert_eq!(load(serde_json::json!({ "browser": "b1", "tabs": [], "active": 3 })), Content::browser("b1", ""));
+        assert_eq!(browser_tabs(vec![], 0), (vec![String::new()], 0));
+        assert_eq!(browser_tabs(vec!["a".into(), "b".into()], 1), (vec!["a".into(), "b".into()], 1));
+    }
+
+    #[test]
     fn browser_blocks_are_saved_under_a_name_herdr_s_own_browser_mod_wont_use() {
-        let n = Node::block("p1", Content::Browser { browser: "b1".into(), url: "https://example.com/".into() });
+        let n = Node::block("p1", Content::browser("b1", "https://example.com/"));
         let saved = serde_json::to_value(&n).unwrap();
         // The shape a herdr-app without this prototype reads as one mod pane.
         assert_eq!(
             saved["content"],
-            serde_json::json!({ "mod": "browser-prototype", "props": { "browser": "b1", "url": "https://example.com/" } })
+            serde_json::json!({ "mod": "browser-prototype", "props": { "browser": "b1", "tabs": [{ "url": "https://example.com/" }], "active": 0 } })
         );
         assert_eq!(serde_json::from_value::<Node>(saved).unwrap(), n);
         // A `browser` mod block, however its props look, is a mod: a
         // future official browser mod's blocks are never taken over.
-        for props in [serde_json::json!(null), serde_json::json!({ "browser": "b1", "url": "https://example.com/" })] {
+        for props in [serde_json::json!(null), serde_json::json!({ "browser": "b1", "tabs": [{ "url": "https://example.com/" }] })] {
             let c: Content = serde_json::from_value(serde_json::json!({ "mod": "browser", "props": props })).unwrap();
             assert_eq!(c, Content::Mod { name: "browser".into(), props: props.clone() }, "{props}");
         }

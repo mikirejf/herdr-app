@@ -220,8 +220,8 @@ A layout is a tree of nodes. Four types:
   terminals as it arranges them), or `{ "agent": "focused" }` (one agent's
   terminal, full size: the one chosen with `agent.focus` / `agent.next`, else
   the focused pane's agent, else the first agent), or `{ "mod": "browser-prototype",
-  "props": { "browser": "b1", "url": "..." } }` (a web
-  page the app draws, not a mod folder; it never opens in `floating`).
+  "props": { "browser": "b1", "tabs": [{ "url": "..." }], "active": 0 } }` (web
+  pages the app draws, one per tab, not a mod folder; it never opens in `floating`).
 - `row` / `column`: children side by side / stacked.
 - `stack`: shows one child (`"active": "<child id>"`), with an optional
   `"header"` (a mod that draws tabs, or `"tabs"` for a plain built-in strip).
@@ -580,9 +580,13 @@ The main ones:
   Terminals display Kitty graphics, including Unicode placeholder images used by
   programs such as yazi; partial images and scrolling follow the placeholder cells.
 - Browsers (macOS builds with the `browser` feature; elsewhere a placeholder):
-  `browser.open {url, place?, pane?}` (place `"right"` default, `"down"`, `"tab"`;
-  says `{browser, pane}`), `browser.navigate {browser, url}`, `browser.back {browser}`,
+  `browser.open {url?, place?, pane?}` (place `"right"` default, `"down"`, `"tab"`;
+  says `{browser, pane}`; no url: one empty tab), `browser.navigate {browser, url}`, `browser.back {browser}`,
   `browser.forward {browser}`, `browser.reload {browser}`, `browser.close {browser}`,
+  `browser.tab.new {browser?, url?}` (a tab after the shown one, shown; no url: an empty tab),
+  `browser.tab.select {browser?, index}` and `browser.tab.close {browser?, index?}` (index 0 is the
+  first tab, as `active` in `ls`; close defaults to the shown tab, shows its right neighbour else its left,
+  and the last tab leaves one empty tab; default browser: the focused one),
   `browser.open_external {browser?}` (the page in the default web browser; http and https only),
   `browser.agent_browser_setup` (adds Herdr's provider to `~/.agent-browser/config.json`; a terminal
   older than this Herdr then runs `agent-browser -p herdr --session herdr-$HC_TERMINAL_ID …`),
@@ -590,7 +594,10 @@ The main ones:
   browser?}` (percent, Chromium's steps; kept per host), `browser.viewport {preset?: "phone"|"tablet"|"fit",
   width?, height?, mobile?, browser?}` (responsive size; zoom and viewport default to the focused
   browser; an agent's own Emulation override replaces it, last one wins). `herdr-app ls` and `browsers()` list them
-  (with `zoom` and `viewport`);
+  (with `zoom` and `viewport`, and every tab as `tabs: [{id, url, title, loading}]` with the shown one's
+  index as `active`; the other fields describe the shown tab, and navigate, back, forward, reload, zoom,
+  viewport and DevTools act on it; a tab's page is created when it is first shown, and a popup or
+  `target=_blank` link opens as a new tab);
   a pane's `browser` names its page. Click a page to type in it; global keys still work.
   Pages are http, https or about:blank. Every browser uses the person's own profile
   (cookies and sign-ins included), and `agent-browser` can drive any of them with no
@@ -808,8 +815,8 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   `tabs` (the tab bar), `menu`, `prompt`, `confirm`, `help`, `toast`,
   Terminals' `picker`, `peek`, and `pane` (an
   example pane header, not used by the default layouts; a browser pane gets
-  back, forward, reload, an address field, zoom, a viewport picker and DevTools from its
-  `browser.js`), and `worktree`
+  a tab strip, back, forward, reload, an address field, zoom, a viewport picker and DevTools from its
+  `browser.js` (its header is one row taller, for the tabs)), and `worktree`
   (git worktrees as spaces: the space menu's and the + menu's New worktree,
   Open worktree (the repo's checkouts, filtered; one already shown is gone
   to) and Remove worktree open it as a dialog with props `{space, folder?,

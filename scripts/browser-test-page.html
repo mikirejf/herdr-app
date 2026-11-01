@@ -3,13 +3,18 @@
 <title>Herdr browser test page</title>
 <!-- What a person tries by hand in a browser pane (just browser-dev):
      typing with dead keys and an IME, a <select> popup, momentum scrolling,
-     the right-click menu, a link that opens a new window. -->
+     the right-click menu, a link and window.open that open a new tab. -->
 <style>body{font:15px -apple-system,sans-serif;margin:16px;background:#fdfdf8}li{padding:4px 0}</style>
 <h1>Herdr browser test page</h1>
 <p>Right-click this text for the context menu.</p>
 <p><input id="text" placeholder="type here: option-e e, then Japanese IME" size="40"></p>
 <p><textarea id="area" rows="3" cols="40" placeholder="more typing"></textarea></p>
 <p><select id="pick"><option>first</option><option>second</option><option>third</option></select></p>
-<p><a href="https://example.com/" target="_blank">A new-window link</a> (opens in this pane).</p>
+<p><a href="https://example.com/" target="_blank">A new-window link</a> (opens as a tab in this pane).</p>
+<p><button onclick="w=window.open('browser-fixture.html')">window.open(url)</button>
+<button onclick="w=window.open()">window.open()</button>
+<button onclick="w.document.title='written by the opener';w.document.body.textContent='opener kept: '+(w.opener===window)">write into the popup</button>
+<button onclick="w.close()">close the popup</button> <span id="note"></span></p>
+<script>var w;</script>
 <ol id="list"></ol>
 <script>for(let i=1;i<=200;i++){const li=document.createElement('li');li.textContent='row '+i;list.append(li)}</script>

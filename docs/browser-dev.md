@@ -69,12 +69,16 @@ herdr-app do browser.devtools --browser b1
 herdr-app do browser.zoom --browser b1 --step in
 herdr-app do browser.viewport --browser b1 --preset phone
 herdr-app do browser.open_external --browser b1
+herdr-app do browser.tab.new --browser b1 --url example.com
+herdr-app do browser.tab.new --browser b1
+herdr-app do browser.tab.select --browser b1 --index 0
+herdr-app do browser.tab.close --browser b1
 herdr-app do browser.close --browser b2
 ```
 
 `scripts/browser-test-page.html` has what to try by hand: typing with dead
-keys and an IME, a `<select>`, a long list to scroll, a right-click menu and
-a new-window link.
+keys and an IME, a `<select>`, a long list to scroll, a right-click menu, a
+`target=_blank` link and a `window.open` button (each lands as a tab).
 
 `bash scripts/browser-live-checks`, run in a terminal inside the dev app,
 walks the agent checks that need a person at the window: an agent's drag,
@@ -82,9 +86,10 @@ right-click and typing (the keyboard must stay where you left it). It writes you
 
 ## How it behaves
 
-- A browser block is `{ "mod": "browser-prototype", "props": { "browser": "b1", "url": "..." } }`,
-  as a pane in a tab (saved with the tab, so it reopens at its last page
-  after a restart) or as a block in a layout. It is saved as a mod block so
+- A browser block is `{ "mod": "browser-prototype", "props": { "browser": "b1", "tabs": [{ "url": "..." }], "active": 0 } }`,
+  as a pane in a tab (saved with the tab, so it reopens with its tabs at
+  their last pages and the same one shown after a restart; only urls and
+  the shown index are saved) or as a block in a layout. It is saved as a mod block so
   a herdr-app without this prototype, sharing the same core, shows that one
   pane as a mod that didn't load instead of failing to read the whole
   layout. The name isn't `browser`, which Herdr's own browser mod will
@@ -158,7 +163,19 @@ right-click and typing (the keyboard must stay where you left it). It writes you
 - Herdr never gives out a browser id (`b1`, `b2`, ...) twice while the app
   runs. A layout block can still open a page under any id, a closed
   browser's included.
-- A popup or a `target="_blank"` link opens in the same pane.
+- A popup or a `target="_blank"` link opens as a new tab in the same pane,
+  shown at once. It is a real popup of the page that opened it, hosted in
+  the pane, so `window.opener` and `postMessage` work (sign-in popups need
+  them); `window.close()` closes that tab, never the pane. `window.open()`
+  with no url starts blank. A refused url is dropped.
+- A browser has tabs, one shown. Each is its own Chromium page with an id
+  unique in the app run (`b1:3`, not saved), created when the tab is first
+  shown (a restart creates only the shown one); a created tab keeps running
+  hidden until it is closed. A tab with no url has no page: its block shows
+  "Browse with your agents". Closing a tab shows its right neighbour, else
+  its left; the last one leaves an empty tab. `browser.navigate`, back,
+  forward, reload, zoom, viewport, DevTools and the agents' attach act on
+  the shown tab, and closing a tab ends only that tab's agent token.
 - No remote-debugging port is opened. `browser.devtools` opens CEF's own
   DevTools window.
 - The profile (cookies, cache) is `<app home>/browser/profile`; delete it

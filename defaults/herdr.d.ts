@@ -189,6 +189,10 @@ export interface PaneInfo {
   mod?: string;
   browser?: string;
   url?: string;
+  /** A browser pane's tabs and the shown one (0 = first), where browsers are built in:
+   *  as browsers() has them, or the saved urls (no id) while the browser isn't open. */
+  tabs?: { id?: string; url: string; title: string; loading: boolean }[];
+  active?: number;
   tab: string;
   /** The terminal's title (what the program set), or the mod's name. */
   title: string;
@@ -209,9 +213,19 @@ export interface PaneInfo {
  *  `panes().find((p) => p.pane === props().pane)`. Live. */
 export function panes(): PaneInfo[];
 
+export interface BrowserTabInfo {
+  /** Unique in the app run (`b1:3`); not saved. */
+  id: string;
+  /** "" for an empty tab: it has no page yet. */
+  url: string;
+  title: string;
+  loading: boolean;
+}
+
 export interface BrowserInfo {
   /** Its id (`b1`), for browser.navigate, browser.close, ... */
   browser: string;
+  /** url, title, loading, can_go_back, can_go_forward, zoom and viewport describe the shown tab. */
   url: string;
   title: string;
   loading: boolean;
@@ -231,6 +245,9 @@ export interface BrowserInfo {
    *  Emulation.setDeviceMetricsOverride replaces it on the page but doesn't show here; a pane
    *  resize that refits a shrunk viewport sends this one again, over the agent's. */
   viewport: { width: number; height: number; mobile: boolean; preset: "phone" | "tablet" | null } | null;
+  /** Its tabs in order (browser.tab.new / select / close), and the shown one's index (0 = first). */
+  tabs: BrowserTabInfo[];
+  active: number;
 }
 
 /** Every open browser (macOS builds with the `browser` feature; empty elsewhere). Live. */

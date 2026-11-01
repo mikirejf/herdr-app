@@ -52,6 +52,9 @@ thread_local! {
     /// The page the window last gave the keyboard (inner None: Herdr);
     /// None until it first decided. CEF's focus requests are checked against it.
     static WANTED: RefCell<Option<Option<String>>> = const { RefCell::new(None) };
+    /// The window's content view and GPUI's view in it, kept from the first
+    /// `container`: a popup's container is made from CEF's callback, which has no `Window`.
+    static HOST: RefCell<Option<(Retained<NSView>, Retained<NSView>)>> = const { RefCell::new(None) };
 }
 
 /// How long after a press in a page CEF's "got focus" still counts as that click.
@@ -74,10 +77,27 @@ pub fn container(id: &str, window: &Window) -> anyhow::Result<Retained<NSView>> 
     if let Some(v) = VIEWS.with_borrow(|v| v.get(id).map(|c| c.view.clone())) {
         return Ok(v);
     }
-    let mtm = MainThreadMarker::new().ok_or_else(|| anyhow::anyhow!("not on the main thread"))?;
     let gpui = gpui_view(window)?;
     // SAFETY: a main-thread read of the view tree.
     let content = unsafe { gpui.superview() }.ok_or_else(|| anyhow::anyhow!("GPUI's view has no superview"))?;
+    // SAFETY: a live view reference; retain adds one owner.
+    let retained = unsafe { Retained::retain(std::ptr::from_ref(gpui).cast_mut()) }.ok_or_else(|| anyhow::anyhow!("GPUI's view is gone"))?;
+    HOST.with_borrow_mut(|h| *h = Some((content.clone(), retained)));
+    make_container(id, &content, gpui)
+}
+
+/// The container for a popup a page opened (made from CEF's callback, where
+/// there's no `Window`): same as `container`, in the window the last one was made in.
+pub fn popup_container(id: &str) -> anyhow::Result<Retained<NSView>> {
+    if let Some(v) = existing(id) {
+        return Ok(v);
+    }
+    let (content, gpui) = HOST.with_borrow(Clone::clone).ok_or_else(|| anyhow::anyhow!("no browser has been shown yet"))?;
+    make_container(id, &content, &gpui)
+}
+
+fn make_container(id: &str, content: &NSView, gpui: &NSView) -> anyhow::Result<Retained<NSView>> {
+    let mtm = MainThreadMarker::new().ok_or_else(|| anyhow::anyhow!("not on the main thread"))?;
     // A size to start at: CEF sizes its view to the parent's when it creates it.
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(800.0, 600.0));
     let view = NSView::initWithFrame(NSView::alloc(mtm), frame);

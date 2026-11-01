@@ -121,7 +121,9 @@ capture or permissions. It needs a running window that has drawn a frame;
 ## Browser panes and agent-browser
 
 Browser panes (macOS builds with the browser feature) show in `herdr-app ls`
-under `browsers`. You can drive one with `agent-browser` (`snapshot -i`,
+under `browsers`; a browser has tabs (`tabs`, `active`) and you drive its shown tab:
+`browser.tab.new`, `browser.tab.select --index <n>` (0 is the first) and `browser.tab.close`
+change which. You can drive one with `agent-browser` (`snapshot -i`,
 `click @e3`, `fill @e2 text`); there is nothing to switch on. It is the
 person's own browser profile, sign-ins included. If
 agent-browser says `Plugin 'herdr' returned success=false`, run

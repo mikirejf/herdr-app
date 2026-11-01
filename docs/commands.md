@@ -165,13 +165,40 @@ End a terminal and its sub-agents.
 
 ## `browser.open`
 
-Open a web page (http, https or about:blank) in a browser pane (macOS builds with the browser feature): "right" (default) or "down" of a pane (default: the focused one), or as a new "tab" in its space. Says its browser id and pane.
+Open a web page (http, https or about:blank) in a browser pane (macOS builds with the browser feature) with one browser tab: "right" (default) or "down" of a pane (default: the focused one), or as a new "tab" in its space. No url: the pane opens with an empty browser tab. Says its browser id and pane.
 
 | Argument | Required |
 |---|---|
-| `url` | yes |
+| `url` | no |
 | `place` | no |
 | `pane` | no |
+
+## `browser.tab.new`
+
+Open a browser tab after the shown one in a browser pane (default: the focused browser) and show it. No url: an empty tab, waiting for an address. Says the browser's tabs.
+
+| Argument | Required |
+|---|---|
+| `browser` | no |
+| `url` | no |
+
+## `browser.tab.select`
+
+Show a browser's tab by number (index, 0 is the first; default browser: the focused one). A tab that was never shown loads its page now. A number alone (browser.tab.select:1) is the index.
+
+| Argument | Required |
+|---|---|
+| `index` | yes |
+| `browser` | no |
+
+## `browser.tab.close`
+
+Close a browser's tab (index, 0 is the first; default: the shown tab) of a browser (default: the focused one). The tab to its right is shown next, else the one to its left. Closing the last tab leaves one empty tab; the pane stays.
+
+| Argument | Required |
+|---|---|
+| `browser` | no |
+| `index` | no |
 
 ## `browser.navigate`
 

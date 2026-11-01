@@ -1,5 +1,7 @@
-//! Browser panes: a web page in a block (`{ "mod": "browser-prototype", "props": { "browser": "b1", "url": … } }`),
-//! as a pane in a tab or a block in the shown layout.
+//! Browser panes: tabbed web pages in a block (`{ "mod": "browser-prototype", "props": { "browser": "b1",
+//! "tabs": [{ "url": … }], "active": 0 } }`), as a pane in a tab or a block in the shown layout.
+//! Every tab is its own engine page, created when first shown; a tab with
+//! no url has none and the block draws the "new tab" state instead.
 //!
 //! macOS builds with the `browser` feature show each page as a native child
 //! view over GPUI's Metal view, kept on its block's bounds every frame
@@ -10,7 +12,7 @@
 //! a placeholder and the commands say what's missing (off.rs). The window
 //! only talks to `Browsers`.
 //!
-//! What the shared code calls on `engine`:
+//! What the shared code calls on `engine` (its ids are tab ids, `b1:3`):
 //! `set_events`, `start`, `open`, `close`, `navigate`, `history`, `reload`,
 //! `devtools`, `zoom`, `set_zoom`, `set_viewport`, `page_view`, `fit`,
 //! `set_focus`, `pressed`, `agent_event`, `clicked_herdr`, `covers_changed`, `wake`,
@@ -47,13 +49,15 @@ pub use off::{Browsers, Event};
 /// What the window does after a browser reported something.
 #[derive(Debug, Default)]
 pub struct Update {
+    /// The browser (block) it concerns.
     pub browser: String,
-    /// The page moved here: the block's saved url follows.
-    pub url: Option<String>,
+    /// A tab's page moved to a new url: the block's saved urls follow.
+    pub url: bool,
+    /// The tabs changed (a popup opened one, a page closed its own): the block
+    /// saves them and the window reconciles.
+    pub tabs: bool,
     /// The page took the keyboard (the person clicked it): its pane is the focused one now.
     pub focused: bool,
-    /// The page asked to close (`window.close()`): its pane goes.
-    pub close: bool,
     /// The person pressed the mouse on Herdr, outside every page.
     pub clicked_herdr: bool,
     /// A page hid under an overlay or came back: who has the keyboard may change.

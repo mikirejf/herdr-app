@@ -10,6 +10,9 @@
 // number only when it isn't 100, the viewport as its icon only. Only the
 // pointer reports the bar's width, so a bar counts as narrow until the
 // pointer first crosses it.
+// Above the bar, a row of tabs (TAB_ROW tall; the app makes a browser pane's
+// header that much taller): each shows its title, an x on hover and on the
+// shown tab, and a + opens a new one. A new empty tab gives the address field the keyboard.
 
 import { div, svg } from "gpui-kit";
 import { h_flex, InputState, Input } from "gpui-base";
@@ -27,6 +30,20 @@ export function address(text) {
   if (host === "localhost" || host === "127.0.0.1") return "http://" + s;
   if (host.includes(".")) return "https://" + s;
   return search();
+}
+
+/** The tab row's height (px): the app adds it to a browser pane's header (BROWSER_TABS_HEIGHT in window.rs). */
+export const TAB_ROW = 28;
+
+/** The room the tab row keeps at its right end (px), for a menu button. */
+const TAB_ROW_END = 34;
+
+/** What a tab shows: its title; before it has one, the host it loads; "New tab" when empty. */
+export function tabTitle(tab) {
+  if (!tab.url) return "New tab";
+  if (tab.title) return tab.title;
+  const host = /^[a-z][a-z0-9+.-]*:\/\/(?:[^/?#@]*@)?([^/?#]*)/i.exec(tab.url)?.[1];
+  return host || tab.url;
 }
 
 /** Below this bar width (px) the bar is narrow: no - and +, no "%", no viewport name. */
@@ -59,6 +76,8 @@ export default class BrowserBar {
     this.editing = false;
     this.shown = null; // the url the field holds while nobody edits it
     this.narrow = true; // narrower than NARROW when last measured; unmeasured counts as narrow
+    this.hot = -1; // the tab the pointer is over
+    this.blank = null; // the last empty tab that got the keyboard's offer (its id)
     this.input.on("focus", (_e, cx) => {
       this.editing = true;
       this.input.set_selected_range({ start: 0, end: this.input.value().length });
@@ -92,6 +111,93 @@ export default class BrowserBar {
     if (this.editing || this.shown === url) return;
     this.shown = url;
     cx.timer.after(0, () => { if (!this.editing && this.shown === url) this.input.set_value(url); });
+  }
+
+  // Gives the address field the keyboard when an empty tab shows (a new tab), once per tab.
+  offer(b, cx) {
+    const tab = b?.tabs?.[b.active];
+    if (!tab || tab.url) return;
+    if (tab.id === this.blank) return;
+    this.blank = tab.id;
+    if (b.focused) cx.timer.after(0, () => this.input.focus());
+  }
+
+  tab(t, pane, x, i, on) {
+    const stop = (_e, cx) => cx.stop_propagation();
+    return h_flex()
+      .id(`pt-${pane}-${i}`)
+      .flex_1()
+      .min_w(0)
+      .max_w(180)
+      .h(22)
+      .pl(8)
+      .pr(4)
+      .gap(6)
+      .items_center()
+      .rounded(6)
+      .border(1)
+      .border_color(on ? t.border : t.background)
+      .bg(on ? t.raised : t.background)
+      .text_size(11.5)
+      .text_color(on ? t.foreground : t.muted)
+      .hover((s) => s.bg(on ? t.raised : t.hover))
+      .on_hover((h, cx) => {
+        if (h && this.hot !== i) { this.hot = i; cx.notify(); }
+        else if (!h && this.hot === i) { this.hot = -1; cx.notify(); }
+      })
+      .on_mouse_down("left", (_e, cx) => {
+        cx.stop_propagation();
+        run("pane.focus", { pane });
+        if (!on) run("browser.tab.select", { browser: this.browser, index: i });
+      })
+      .when(Boolean(x.loading), (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(10).flex_none().text_color(t.dim).spin(900)))
+      .child(div().flex_1().min_w(0).truncate().child(tabTitle(x)))
+      .when(on || this.hot === i, (el) => el.child(
+        div()
+          .id(`pt-x-${pane}-${i}`)
+          .flex_none()
+          .p(2)
+          .rounded(4)
+          .text_color(t.dim)
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", stop)
+          .on_click((_e, cx) => { cx.stop_propagation(); run("browser.tab.close", { browser: this.browser, index: i }); })
+          .child(svg("mods/pane/close.svg").size(12))));
+  }
+
+  // The row of tabs above the bar; null where the app has no browser (the pane has no tabs).
+  tabs(t, p) {
+    const b = browsers().find((x) => x.browser === p.browser);
+    const tabs = b?.tabs ?? p.tabs;
+    if (!tabs) return null;
+    const active = b?.active ?? p.active ?? 0;
+    const pane = p.pane;
+    this.browser = p.browser;
+    let row = h_flex()
+      .id(`pt-${pane}`)
+      .flex_none()
+      .w_full()
+      .h(TAB_ROW)
+      .pl(6)
+      .pr(TAB_ROW_END)
+      .gap(3)
+      .items_center();
+    tabs.forEach((x, i) => { row = row.child(this.tab(t, pane, x, i, i === active)); });
+    return row.child(
+      div()
+        .id(`pt-new-${pane}`)
+        .flex_none()
+        .p(4)
+        .rounded(5)
+        .text_color(t.dim)
+        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          run("pane.focus", { pane });
+          run("browser.tab.new", { browser: p.browser });
+        })
+        .child(svg("mods/pane/plus.svg").size(14)));
   }
 
   button(t, id, icon, command, on, args = {}) {
@@ -150,6 +256,7 @@ export default class BrowserBar {
     this.pane = p.pane;
     this.url = b?.url ?? p.url ?? "";
     this.follow(this.url, cx);
+    this.offer(b, cx);
     const pane = p.pane;
     const zoom = b?.zoom ?? 100;
     const viewport = b?.viewport ?? null;

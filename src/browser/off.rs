@@ -40,6 +40,18 @@ impl Browsers {
         Err(UNAVAILABLE.into())
     }
 
+    pub fn tab_command(&mut self, _name: &str, _browser: &str, _args: &Value) -> Result<Value, String> {
+        Err(UNAVAILABLE.into())
+    }
+
+    pub fn active_tab(&self, _browser: &str) -> Option<String> {
+        None
+    }
+
+    pub fn saved(&self, _browser: &str) -> Option<(Vec<String>, usize)> {
+        None
+    }
+
     pub fn info(&self, _browser: &str, _focused: bool) -> Option<Value> {
         None
     }

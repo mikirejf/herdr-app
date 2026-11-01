@@ -29,6 +29,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 const HEADER_HEIGHT: f32 = 30.0;
+/// The tab row a browser pane's header gets above its bar when the header is
+/// the `pane` mod and browser panes are built in (`mods/pane/browser.js` draws it).
+const BROWSER_TABS_HEIGHT: f32 = 28.0;
+
+/// A pane header's height: the layout's, and the browser tab row for a browser pane.
+fn header_height(h: &crate::layout::Header, content: Option<&Content>) -> f32 {
+    let tabs = crate::browser::AVAILABLE
+        && matches!(content, Some(Content::Browser { .. }))
+        && matches!(&h.content, HeaderContent::Mod { name, .. } if name == "pane");
+    h.height.unwrap_or(HEADER_HEIGHT) + if tabs { BROWSER_TABS_HEIGHT } else { 0.0 }
+}
 const HANDLE: f32 = 6.0;
 
 // The three native buttons plus their trailing breathing room (also used by the tabs mod).
@@ -1540,9 +1551,11 @@ impl AppWindow {
         {
             self.layout_page = None;
         }
-        let pane_page = self.pane_page();
+        // Pages are tabs: only a browser's shown tab can take the keyboard.
+        let pane_page = self.pane_page().and_then(|b| self.browsers.active_tab(&b));
+        let layout_page = self.layout_page.as_deref().and_then(|b| self.browsers.active_tab(b));
         let covered = self.browsers.covered();
-        let page = crate::browser::keyboard_page(dialog, control, self.layout_page.as_deref(), pane_page.as_deref(), &covered).map(str::to_owned);
+        let page = crate::browser::keyboard_page(dialog, control, layout_page.as_deref(), pane_page.as_deref(), &covered).map(str::to_owned);
         self.browsers.keys(page.as_deref(), window);
     }
 
@@ -1567,7 +1580,7 @@ impl AppWindow {
         self.model.tabs().flat_map(|t| t.root.walk()).find(|n| n.browser() == Some(browser)).map(|n| n.id.clone())
     }
 
-    /// A page changed, took the keyboard or asked to close.
+    /// A page changed, took the keyboard, or opened or closed a tab.
     fn browser_event(&mut self, event: crate::browser::Event, window: &mut Window, cx: &mut Context<Self>) {
         let u = self.browsers.apply(event);
         if u.clicked_herdr {
@@ -1582,15 +1595,12 @@ impl AppWindow {
             return self.sync_browser_keys(window);
         }
         let pane = self.browser_pane(&u.browser);
-        if let Some(url) = &u.url {
-            self.save_browser_url(&u.browser, url);
+        if u.url || u.tabs {
+            self.save_browser(&u.browser);
         }
-        if u.close && let Some(pane) = &pane {
-            let r = self.run_as("pane.close", json!({ "pane": pane }), false, window, cx);
-            if let Some(e) = r.get("error") {
-                tracing::warn!("browser {}: the page asked to close: {e}", crate::browser::log_safe(&u.browser));
-            }
-            return;
+        if u.tabs {
+            // A popup opened a tab or a page closed its own: the pages follow the tabs.
+            return self.sync(window, cx);
         }
         if u.focused {
             // The person clicked into the page: a control that had the keyboard
@@ -1645,14 +1655,16 @@ impl AppWindow {
         r
     }
 
-    /// A browser pane's saved url follows its page: it reopens where it was.
-    /// (A browser block of the layout keeps the url its file gives it.)
-    fn save_browser_url(&mut self, browser: &str, url: &str) {
+    /// A browser pane's saved tabs follow its pages and the shown tab: it
+    /// reopens as it was. (A browser block of the layout keeps what its file gives it.)
+    fn save_browser(&mut self, browser: &str) {
+        let Some((tabs, active)) = self.browsers.saved(browser) else { return };
         let Some(pane) = self.browser_pane(browser) else { return };
         if let Some(n) = self.model.tab_of(&pane).map(|t| t.id.clone()).and_then(|t| self.model.tab_mut(&t)).and_then(|t| t.root.find_mut(&pane))
-            && let Kind::Block { content: Content::Browser { url: saved, .. } } = &mut n.kind
+            && let Kind::Block { content: Content::Browser { tabs: saved, active: shown, .. } } = &mut n.kind
         {
-            *saved = url.to_owned();
+            *saved = tabs;
+            *shown = active;
         }
     }
 
@@ -1660,7 +1672,7 @@ impl AppWindow {
     fn open_browser(&mut self, url: &str, place: &str, pane: Option<String>) -> Result<Value, String> {
         let (browser, url) = self.browsers.prepare_open(url, &self.model, &self.chrome)?;
         let target = pane.or_else(|| self.model.focused_pane());
-        let block = |id: &str| Node::block(id, Content::Browser { browser: browser.clone(), url: url.clone() });
+        let block = |id: &str| Node::block(id, Content::browser(browser.clone(), url.clone()));
         match place {
             "right" | "down" => {
                 let target = target.ok_or("no pane to open the browser beside: make a space first (space.new), or use place \"tab\"")?;
@@ -1792,7 +1804,8 @@ impl AppWindow {
                         continue;
                     }
                     // A browser pane: its page, no terminal.
-                    if let Some(Content::Browser { browser, url, .. }) = p.content() {
+                    if let Some(Content::Browser { browser, tabs: saved_tabs, active }) = p.content() {
+                        let url = p.content().and_then(Content::browser_url).unwrap_or_default();
                         // A browser that isn't open: its saved url, without
                         // query or fragment (codes and magic links stay in the
                         // tab document only; an open one's comes from `info`).
@@ -1800,8 +1813,15 @@ impl AppWindow {
                         let info = self.browsers.info(browser, focused);
                         let field = |k: &str| info.as_ref().and_then(|i| i.get(k)).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned);
                         let title = field("title").or_else(|| field("url")).unwrap_or_else(|| url.clone());
-                        panes.push(json!({ "pane": p.id, "terminal": null, "browser": browser, "url": field("url").unwrap_or_else(|| url.clone()),
-                            "tab": ctx.id, "title": title, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                        let mut pane = json!({ "pane": p.id, "terminal": null, "browser": browser, "url": field("url").unwrap_or_else(|| url.clone()),
+                            "tab": ctx.id, "title": title, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) });
+                        // The pane header's tab row (it exists only where browsers are built in).
+                        if crate::browser::AVAILABLE {
+                            pane["tabs"] = info.as_ref().and_then(|i| i.get("tabs")).cloned()
+                                .unwrap_or_else(|| json!(saved_tabs.iter().map(|u| json!({ "url": crate::browser::public_url(u), "title": "", "loading": false })).collect::<Vec<_>>()));
+                            pane["active"] = info.as_ref().and_then(|i| i.get("active")).cloned().unwrap_or_else(|| json!(active));
+                        }
+                        panes.push(pane);
                         continue;
                     }
                     let Some(addr) = p.terminal() else { continue };
@@ -3243,11 +3263,23 @@ impl AppWindow {
                 // Zoom and viewport default to the focused browser (keys.json's `browser` keys name none).
                 let b = Self::owned(a, "browser").or_else(|| self.focused_browser()).unwrap_or_default();
                 let r = self.browsers.command(name, &b, a);
-                if let Some(url) = r.as_ref().ok().and_then(|v| v.get("url")).and_then(Value::as_str) {
-                    let url = url.to_owned();
-                    self.save_browser_url(&b, &url);
+                let navigated = name == "browser.navigate" && r.is_ok();
+                if navigated {
+                    self.save_browser(&b);
                 }
-                return self.answer(r);
+                self.answer(r);
+                // A url typed into an empty tab opens its page: that is a sync's reconcile.
+                if !navigated {
+                    return;
+                }
+            }
+            "browser.tab.new" | "browser.tab.select" | "browser.tab.close" => {
+                let b = Self::owned(a, "browser").or_else(|| self.focused_browser()).unwrap_or_default();
+                let r = self.browsers.tab_command(name, &b, a);
+                if r.is_ok() {
+                    self.save_browser(&b);
+                }
+                self.answer(r);
             }
             // ---- agents
             "agent.focus" => {
@@ -3861,7 +3893,7 @@ impl AppWindow {
                         let terms: Vec<Value> = c.root.terminals().iter().filter_map(|n| Some(terminal(&n.id, n.terminal()?))).collect();
                         let mut tab = json!({ "id": c.id, "name": Model::tab_name(p, c), "active": Some(&c.id) == active.as_ref(), "settled": c.settled.is_some(), "terminals": terms });
                         let browsers: Vec<Value> = c.root.walk().into_iter().filter_map(|n| match n.content() {
-                            Some(Content::Browser { browser, url, .. }) => Some(browser_status(self.browsers.info(browser, false), browser, &n.id, url)),
+                            Some(content @ Content::Browser { browser, .. }) => Some(browser_status(self.browsers.info(browser, false), browser, &n.id, content.browser_url().unwrap_or_default())),
                             _ => None,
                         }).collect();
                         if !browsers.is_empty() {
@@ -4043,7 +4075,7 @@ impl AppWindow {
         el = shadow(el, f.shadow.as_deref());
         let body = div().flex_1().min_h_0().flex().child(inner);
         let Some(h) = &f.header else { return el.child(body).into_any_element() };
-        let head = div().flex_none().h(settings::z(h.height.unwrap_or(HEADER_HEIGHT))).w_full().flex()
+        let head = div().flex_none().h(settings::z(header_height(h, n.content()))).w_full().flex()
             .child(self.render_slot(&format!("{}#frame", n.id), cx));
         if header_over(h.hover(), n.content()) {
             let head = head.absolute().left_0().right_0().opacity(0.).group_hover(group, |s| s.opacity(1.));
@@ -4119,7 +4151,7 @@ impl AppWindow {
                 }
             }
         };
-        let row = frame.and_then(|f| f.header.as_ref()).filter(|h| !h.bottom() && !h.hover()).map(|h| h.height.unwrap_or(HEADER_HEIGHT));
+        let row = frame.and_then(|f| f.header.as_ref()).filter(|h| !h.bottom() && !h.hover()).map(|h| header_height(h, n.content()));
         el.children(self.render_floats(n, cx)).children(self.pane_grip(&n.id, row, cx)).into_any_element()
     }
 
@@ -4149,8 +4181,9 @@ impl AppWindow {
                 None => div().into_any_element(),
             },
             Content::Mod { .. } => self.render_slot(&n.id, cx),
-            Content::Browser { browser, url } => {
+            Content::Browser { browser, .. } => {
                 let id = n.id.clone();
+                let url = content.browser_url().unwrap_or_default();
                 div()
                     .size_full()
                     .relative()
@@ -4987,7 +5020,7 @@ mod tests {
     #[test]
     fn a_hover_header_is_never_drawn_over_a_browser_pane() {
         use crate::layout::Content;
-        let browser = Content::Browser { browser: "b1".into(), url: "https://example.test/".into() };
+        let browser = Content::browser("b1", "https://example.test/");
         assert!(!super::header_over(true, Some(&browser)), "a hover header would sit under the page's native view");
         assert!(!super::header_over(false, Some(&browser)));
         let terminal = Content::Terminal { terminal: "t1".into() };

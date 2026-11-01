@@ -3,10 +3,11 @@
 // Shows the program's icon (the app's program table), the agent's name or
 // the terminal's title, the folder, and the agent's status; buttons split, zoom and close
 // this pane. Props from the app: { pane, terminal }. Click: focus the pane.
-// A browser pane gets the browser bar (browser.js) in place of icon, name and folder.
+// A browser pane gets the browser bar (browser.js) in place of icon, name and folder,
+// under a row of tabs (the app makes its header taller for it).
 
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex } from "gpui-base";
+import { h_flex, v_flex } from "gpui-base";
 import { panes, props, run, theme, home } from "herdr";
 import BrowserBar from "./browser.js";
 
@@ -51,24 +52,26 @@ export default class Pane extends View {
     const p = this.me();
     if (!p) return div();
     const pane = p.pane;
-    const head = h_flex()
+    const browser = Boolean(p.browser && this.bar);
+    const tabs = browser ? this.bar.tabs(t, p) : null;
+    // The pane's look and clicks sit on the outermost element: the whole header, tab row included.
+    const shell = (el) => el
       .id(`pane-head-${pane}`)
       .size_full()
-      .px(10)
-      .gap(8)
-      .items_center()
       .bg(t.background)
       .border_b(1)
       .border_color(t.border)
-      .text_size(12)
       .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })
       .on_click(() => run("pane.focus", { pane }));
-    return (p.browser && this.bar ? head.child(this.bar.render(t, p, cx, this.hovered)) : this.terminal(head, t, p))
+    const row = h_flex().px(10).gap(8).items_center().text_size(12);
+    const head = tabs ? row.flex_1().min_h(0) : shell(row);
+    const bar = (browser ? head.child(this.bar.render(t, p, cx, this.hovered)) : this.terminal(head, t, p))
       .when(this.hovered, el => el
         .child(this.button(t, `ph-r-${pane}`, "split-right", "pane.split", { direction: "right", pane }))
         .child(this.button(t, `ph-d-${pane}`, "split-down", "pane.split", { direction: "down", pane }))
         .child(this.button(t, `ph-z-${pane}`, p.zoomed ? "unzoom" : "zoom", "pane.zoom", { pane }))
         .child(this.button(t, `ph-x-${pane}`, "close", "pane.close", { pane })));
+    return tabs ? shell(v_flex()).child(tabs).child(bar) : bar;
   }
 
   terminal(head, t, p) {

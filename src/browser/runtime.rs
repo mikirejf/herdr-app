@@ -24,7 +24,7 @@ use super::agent;
 use super::emulate::{self, Viewport};
 use super::native::Event;
 use super::proxy;
-use super::registry::Page;
+use super::registry::{self, Page};
 use super::view;
 
 const FRAMEWORK: &str = "Chromium Embedded Framework.framework/Chromium Embedded Framework";
@@ -45,7 +45,7 @@ enum Phase {
     Failed,
 }
 
-/// One CEF browser: Herdr's id, the open it belongs to, and CEF's own.
+/// One CEF browser: Herdr's id (a tab's), the open it belongs to, and CEF's own.
 struct Open {
     id: String,
     generation: u64,
@@ -68,8 +68,8 @@ struct State {
     next_generation: u64,
     /// What each wanted page last said about itself.
     pages: HashMap<String, Page>,
-    /// Popups turned into navigations of their own browser, after the callback.
-    navigations: Vec<(String, String)>,
+    /// Popups allowed and not created yet: (opener's id, CEF's popup id, the popup's tab id).
+    popups: Vec<(String, c_int, String)>,
     /// DevTools windows open (CEF's own; closed before shutdown).
     devtools: usize,
     /// Browsers Herdr is closing, by CEF identifier: their `do_close` is
@@ -525,7 +525,6 @@ fn pump() {
     PUMPING.set(true);
     do_message_loop_work();
     PUMPING.set(false);
-    finish_navigations();
     proxy::drain();
 }
 
@@ -566,13 +565,6 @@ pub fn close(id: &str) {
     }
 }
 
-fn finish_navigations() {
-    let navs = STATE.with_borrow_mut(|s| std::mem::take(&mut s.navigations));
-    for (id, url) in navs {
-        let _ = navigate(&id, &url);
-    }
-}
-
 /// Opens browser `id` filling `parent`, now or once CEF's context is ready.
 pub fn open(id: &str, parent: Retained<NSView>, url: String) {
     let generation = STATE.with_borrow_mut(|s| {
@@ -601,13 +593,7 @@ fn create(id: &str, generation: u64, parent: &NSView, url: &str) {
     let handle: sys::cef_window_handle_t = (parent as *const NSView).cast_mut().cast();
     let window_info = WindowInfo::default().set_as_child(handle, &bounds);
     let id = id.to_owned();
-    let mut client = HerdrClient::new(
-        HerdrLifeSpan::new(id.clone(), generation),
-        HerdrLoad::new(id.clone(), generation),
-        HerdrDisplay::new(id.clone(), generation),
-        HerdrFocus::new(id.clone(), generation),
-        HerdrDownloads::new(),
-    );
+    let mut client = new_client(&id, generation);
     STATE.with_borrow_mut(|s| s.creating += 1);
     let asked = browser_host_create_browser(
         Some(&window_info),
@@ -625,6 +611,16 @@ fn create(id: &str, generation: u64, parent: &NSView, url: &str) {
     }
 }
 
+fn new_client(id: &str, generation: u64) -> Client {
+    HerdrClient::new(
+        HerdrLifeSpan::new(id.to_owned(), generation),
+        HerdrLoad::new(id.to_owned(), generation),
+        HerdrDisplay::new(id.to_owned(), generation),
+        HerdrFocus::new(id.to_owned(), generation),
+        HerdrDownloads::new(),
+    )
+}
+
 /// Records a page change and tells the window (only for the id's current open).
 fn page_changed(id: &str, generation: u64, change: impl FnOnce(&mut Page)) {
     let page = STATE.with_borrow_mut(|s| {
@@ -636,7 +632,7 @@ fn page_changed(id: &str, generation: u64, change: impl FnOnce(&mut Page)) {
         Some(page.clone())
     });
     if let Some(page) = page {
-        send(Event::Page { browser: id.to_owned(), page });
+        send(Event::Page { tab: id.to_owned(), page });
     }
 }
 
@@ -845,6 +841,7 @@ wrap_life_span_handler! {
             // Its block went while CEF was creating it: close it right away.
             let wanted = STATE.with_borrow_mut(|s| {
                 s.creating = s.creating.saturating_sub(1);
+                s.popups.retain(|(_, _, tab)| *tab != self.id);
                 s.browsers.push(Open { id: self.id.clone(), generation: self.generation, browser: browser.clone() });
                 s.is_current(&self.id, self.generation)
             });
@@ -857,48 +854,96 @@ wrap_life_span_handler! {
             }
         }
 
+        /// A popup (`window.open`, a target link) becomes a tab of this pane: a
+        /// real popup browser hosted in a container of its own, so the page
+        /// that opened it keeps `window.opener` (OAuth sign-ins need it). The
+        /// tab is reserved here, in the callback, and wired up in
+        /// `on_after_created`.
         fn on_before_popup(
             &self,
             browser: Option<&mut Browser>,
             frame: Option<&mut Frame>,
-            _popup_id: c_int,
+            popup_id: c_int,
             target_url: Option<&CefString>,
             _target_frame_name: Option<&CefString>,
             _target_disposition: WindowOpenDisposition,
             user_gesture: c_int,
             _popup_features: Option<&PopupFeatures>,
-            _window_info: Option<&mut WindowInfo>,
-            _client: Option<&mut Option<Client>>,
+            window_info: Option<&mut WindowInfo>,
+            client: Option<&mut Option<Client>>,
             _settings: Option<&mut BrowserSettings>,
             _extra_info: Option<&mut Option<DictionaryValue>>,
-            _no_javascript_access: Option<&mut c_int>,
+            no_javascript_access: Option<&mut c_int>,
         ) -> c_int {
-            // No top-level Chromium windows: a popup or a new-tab link opens in this pane.
+            if !is_current(&self.id, self.generation) {
+                return 1;
+            }
+            let (Some(window_info), Some(client), Some(no_javascript_access)) = (window_info, client, no_javascript_access) else { return 1 };
+            let url = target_url.map(|u| u.to_string()).unwrap_or_default();
             // The URL gate, and a cross-origin frame needs the person's gesture.
-            if let Some(url) = target_url.map(|u| u.to_string()).filter(|u| !u.is_empty())
-                && is_current(&self.id, self.generation)
-            {
+            // `window.open()` with no url starts blank and navigates later.
+            if !url.is_empty() {
                 let frame_url = frame.as_ref().map(|f| CefString::from(&f.url()).to_string()).unwrap_or_default();
                 let is_main = frame.as_ref().is_some_and(|f| f.is_main() == 1);
                 let main_url = browser.and_then(|b| b.main_frame()).map(|f| CefString::from(&f.url()).to_string()).unwrap_or_default();
-                if agent::popup_allowed(&url, &frame_url, &main_url, is_main, user_gesture == 1) {
-                    tracing::info!("browser: {} popup {} opens in its pane", super::log_safe(&self.id), agent::loggable(&url));
-                    STATE.with_borrow_mut(|s| s.navigations.push((self.id.clone(), url)));
-                } else {
+                if !agent::popup_allowed(&url, &frame_url, &main_url, is_main, user_gesture == 1) {
                     tracing::warn!(
                         "browser: {} popup to {} dropped (gesture {}, main frame {is_main}): only http, https and about:blank, and a cross-origin frame needs a click",
                         super::log_safe(&self.id), agent::loggable(&url), user_gesture == 1
                     );
+                    return 1;
                 }
             }
-            1
+            let tab = registry::tab_id(registry::browser_of(&self.id));
+            let parent = match view::popup_container(&tab) {
+                Ok(parent) => parent,
+                Err(e) => {
+                    tracing::warn!("browser: {} popup dropped, no view for it: {e:#}", super::log_safe(&self.id));
+                    return 1;
+                }
+            };
+            let size = parent.bounds().size;
+            let bounds = Rect { x: 0, y: 0, width: size.width as c_int, height: size.height as c_int };
+            let handle: sys::cef_window_handle_t = Retained::as_ptr(&parent).cast_mut().cast();
+            *window_info = std::mem::take(window_info).set_as_child(handle, &bounds);
+            let generation = STATE.with_borrow_mut(|s| {
+                s.next_generation += 1;
+                s.current.insert(tab.clone(), s.next_generation);
+                s.pages.insert(tab.clone(), Page { url: url.clone(), loading: true, ..Page::default() });
+                s.popups.push((self.id.clone(), popup_id, tab.clone()));
+                s.creating += 1;
+                s.next_generation
+            });
+            *client = Some(new_client(&tab, generation));
+            // The opener keeps its handle on the popup (`window.opener`, postMessage).
+            *no_javascript_access = 0;
+            tracing::info!("browser: {} popup {} opens as tab {}", super::log_safe(&self.id), agent::loggable(&url), super::log_safe(&tab));
+            send(Event::Popup { opener: self.id.clone(), tab, url });
+            0
+        }
+
+        /// CEF dropped a popup it had allowed: its tab goes.
+        fn on_before_popup_aborted(&self, _browser: Option<&mut Browser>, popup_id: c_int) {
+            let tab = STATE.with_borrow_mut(|s| {
+                let at = s.popups.iter().position(|(opener, id, _)| *opener == self.id && *id == popup_id)?;
+                let (_, _, tab) = s.popups.remove(at);
+                s.creating = s.creating.saturating_sub(1);
+                s.current.remove(&tab);
+                s.pages.remove(&tab);
+                Some(tab)
+            });
+            if let Some(tab) = tab {
+                tracing::info!("browser: popup of {} aborted; tab {} dropped", super::log_safe(&self.id), super::log_safe(&tab));
+                view::remove(&tab);
+                send(Event::PopupAborted { opener: self.id.clone(), tab });
+            }
         }
 
         fn do_close(&self, browser: Option<&mut Browser>) -> c_int {
             // 0 would make CEF send performClose: to the browser's top-level
             // window: Herdr's own. 1: Herdr closes it. Closes Herdr starts
             // land here too (ignored); a page that closes itself
-            // (window.close()) asks the window to close its pane.
+            // (window.close()) asks the window to close its tab.
             let Some(browser) = browser else { return 1 };
             let cef = browser.identifier();
             let ours = STATE.with_borrow(|s| s.phase == Phase::Closing || s.closing.contains(&cef));
