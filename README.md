@@ -121,6 +121,7 @@ just install
 
 Install [just](https://github.com/casey/just) to use these recipes.
 The platform installer builds a release and adds the app to your desktop.
+On macOS it also builds the browser panes, which need `cmake` and `ninja` (`brew install cmake ninja`); see [browser panes](docs/browser-dev.md#installing).
 On Linux it links to this checkout, so keep the checkout in place.
 Quit and reopen Herdr to use the new build.
 

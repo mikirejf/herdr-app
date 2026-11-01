@@ -6,7 +6,7 @@
 #   browser-dev-run --relaunch [...]    rebuild, then quit the running one and run detached
 #   browser-dev-run --stop              quit the app and stop its core
 #
-# Bundle args go to browser-dev-bundle.
+# Bundle args go to browser-bundle.
 #
 # The home (/tmp/hbd.dev) is kept between runs, so the welcome, spaces, pages
 # and the browser profile survive rebuilds. A new home starts with the welcome
@@ -75,7 +75,7 @@ esac
 export PATH
 
 # Build first: a failed build leaves a running app alone.
-BROWSER_DEV_APP=$staged bash scripts/browser-dev-bundle "$@"
+BROWSER_APP=$staged bash scripts/browser-bundle "$@"
 if [ "$mode" = relaunch ]; then quit_app; mode=background; fi
 if [ "$staged" != "$final" ]; then
   # CEF's helpers can outlive the app by a moment.

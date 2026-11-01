@@ -50,14 +50,14 @@ docs-check: build
     bun test scripts/docs.test.ts
     bun scripts/docs.ts check
 
-# Builds target/browser-dev/Herdr Dev.app (scripts/browser-dev-bundle): the
+# Builds target/browser-dev/Herdr Dev.app (scripts/browser-bundle): the
 # `browser` feature, CEF's framework and helpers. CEF_PATH (default
 # ~/.cache/herdr-app/cef) keeps CEF's ~600 MB download outside the repo; a
 # bare `cargo build --features browser` without it is refused (build.rs).
 # Herdr with Chromium browser panes, built but not started (macOS)
 [macos]
 browser-build *args:
-    bash scripts/browser-dev-bundle {{args}}
+    bash scripts/browser-bundle {{args}}
 
 # Runs the dev bundle on its own home and core (/tmp/hbd.dev, kept between
 # runs; FRESH=1 for a new one), never your real ones, and serves the test

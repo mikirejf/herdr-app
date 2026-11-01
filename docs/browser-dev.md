@@ -1,4 +1,4 @@
-# Browser panes (prototype, macOS)
+# Browser panes (macOS)
 
 A browser pane shows a real Chromium page in a block: CEF (the Chromium
 Embedded Framework) in windowed mode, one native view per page over the
@@ -19,10 +19,10 @@ processes from it on demand, so deleting it can kill that app.
 `browser-build` refuses while an app runs from `target/browser-dev`;
 `browser-dev` and `browser-relaunch` build beside it (`Herdr Dev.next.app`)
 and swap the new bundle in once the old app has quit. A `FRESH=1` run builds
-its own bundle inside its scratch home. `BROWSER_DEV_APP=<absolute path>.app`
-sends `scripts/browser-dev-bundle` anywhere else.
+its own bundle inside its scratch home. `BROWSER_APP=<absolute path>.app`
+sends `scripts/browser-bundle` anywhere else.
 
-Both need `cmake` and `ninja` (`brew install cmake ninja`). CEF on macOS only
+Building and installing need `cmake` and `ninja` (`brew install cmake ninja`); the script stops with that hint when they are missing. CEF on macOS only
 starts from such a bundle, so `cargo run` can't show a page.
 
 `CEF_PATH` is where CEF's binary distribution is downloaded once and kept
@@ -37,17 +37,22 @@ CEF_PATH=~/.cache/herdr-app/cef CEF_DOWNLOAD_URL=https://cef-builds.spotifycdn.c
   cargo build --features browser --bin herdr-helper --bin herdr-app
 ```
 
-### As your everyday Herdr
+### Installing
 
-`bash scripts/browser-daily on` copies the built bundle to
-`~/Applications/Herdr Browser.app`, quits Herdr (your terminals keep
-running in the core, as across an update), opens the copy on your real home
-and core, and runs `browser.agent_browser_setup`. `off` quits it and opens
-`/Applications/Herdr.app`; `status` says which runs. `on --cef` takes the
-CEF bundle. This is the one path here that runs a prototype on your real
-home: never run it and stock Herdr at once, and while it's off, stock
-Herdr shows browser panes as a mod that didn't load. `DRY_RUN=1` prints
-the steps. Moving to Herdr's own browser later: [browser-transition.md](browser-transition.md).
+`just install` on macOS builds this app in release mode (browser panes
+included), signs the bundle and installs it to `~/Applications/Herdr.app`.
+It builds with the same script as the dev app, `scripts/browser-bundle
+--install`, which signs inside out with `HERDR_APP_SIGN_IDENTITY` (ad hoc
+when unset), the hardened runtime and `scripts/macos-browser-entitlements.plist`:
+
+```sh
+HERDR_APP_SIGN_IDENTITY='Apple Development: you@example.com (TEAMID)' just install
+```
+
+A stable identity keeps macOS' privacy grants and the "Herdr Safe Storage"
+keychain choice across installs. Quit and reopen Herdr afterwards: a running
+app starts its browser helpers from the installed bundle, which the install
+replaced.
 
 ## Try it
 

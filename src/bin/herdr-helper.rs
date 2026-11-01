@@ -1,6 +1,6 @@
 //! CEF's helper process: Chromium starts its renderer, GPU, network and other
 //! processes from it. The dev bundle puts copies of it under
-//! `Contents/Frameworks/Herdr Helper*.app` (scripts/browser-dev-bundle); it is
+//! `Contents/Frameworks/Herdr Helper*.app` (scripts/browser-bundle); it is
 //! never run by hand.
 
 #[cfg(target_os = "macos")]

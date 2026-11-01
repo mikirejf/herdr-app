@@ -1,39 +1,33 @@
 #!/bin/bash
+# Builds Herdr with browser panes, signs it, and installs it to
+# ~/Applications/Herdr.app (scripts/browser-bundle --install does the build).
+#
+#   HERDR_APP_SIGN_IDENTITY='Apple Development: you@example.com (TEAMID)' just install
+#
+# The signing identity is optional: ad hoc signing gives every build a new
+# identity, so macOS asks for folder and other privacy permissions again after
+# each install, and for the browser's cookie keychain item. Needs cmake and
+# ninja for CEF's C++ wrapper: brew install cmake ninja. The first build
+# downloads CEF (about 135 MB) into $CEF_PATH (default ~/.cache/herdr-app/cef).
 set -euo pipefail
 
 [[ $(uname -s) == Darwin ]] || { echo 'This installer requires macOS.' >&2; exit 1; }
 cd "$(dirname "$0")/.."
-cargo build --release
+
+bash scripts/browser-bundle --install
+staged=${BROWSER_APP:-$PWD/target/install/Herdr.app}
 
 app="$HOME/Applications/Herdr.app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$HOME/.local/bin"
-# Replace atomically so installing does not interrupt a running Herdr.
-cp target/release/herdr-app "$app/Contents/MacOS/Herdr.new"
-mv -f "$app/Contents/MacOS/Herdr.new" "$app/Contents/MacOS/Herdr"
-chmod +x "$app/Contents/MacOS/Herdr"
-cp assets/icons/Herdr.icns "$app/Contents/Resources/Herdr.icns"
-
-cat > "$app/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-    <key>CFBundleExecutable</key><string>Herdr</string>
-    <key>CFBundleIdentifier</key><string>dev.herdr.app</string>
-    <key>CFBundleName</key><string>Herdr</string>
-    <key>CFBundleDisplayName</key><string>Herdr</string>
-    <key>CFBundleIconFile</key><string>Herdr</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.0.1</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>NSPrincipalClass</key><string>NSApplication</string>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>LSEnvironment</key><dict/></dict></plist>
-PLIST
-# Finder does not inherit a login shell's PATH; hc must still be discoverable.
-/usr/libexec/PlistBuddy -c "Add :LSEnvironment:PATH string $HOME/.local/bin:/opt/homebrew/bin:$PATH" "$app/Contents/Info.plist"
-# Ad-hoc signing gives every build a new identity, so macOS asks for folder and
-# other privacy permissions again after each install. A stable certificate keeps them.
-codesign --force --sign "${HERDR_APP_SIGN_IDENTITY:--}" "$app"
+mkdir -p "$HOME/Applications" "$HOME/.local/bin"
+# Swap whole bundles by rename, so the app never holds a mix of old and new
+# files. A running Herdr starts its browser helpers from the bundle path, so
+# its browser panes may fail until it is restarted.
+rm -rf "$app.new" "$app.old"
+ditto "$staged" "$app.new"
+codesign --verify --deep --strict "$app.new"
+if [[ -e $app ]]; then mv "$app" "$app.old"; fi
+mv "$app.new" "$app"
+rm -rf "$app.old"
 ln -sfn "$app/Contents/MacOS/Herdr" "$HOME/.local/bin/herdr-app"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
 echo "Installed $app. Quit and reopen Herdr to use the new build."

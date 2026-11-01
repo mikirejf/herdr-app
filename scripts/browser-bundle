@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
-# Builds target/browser-dev/Herdr Dev.app: herdr-app with the `browser`
+# Builds an app bundle with browser panes: herdr-app with the `browser`
 # feature, CEF's framework and its five helper apps. CEF on macOS only starts
-# from such a bundle. Ad hoc signed, for this machine only.
+# from such a bundle. Shared by the dev app (just browser-build, browser-dev)
+# and the installer (scripts/install-macos).
 #
-#   scripts/browser-dev-bundle [--release]
+#   scripts/browser-bundle [--release]   target/browser-dev/Herdr Dev.app, ad hoc
+#                                        signed, for this machine only
+#   scripts/browser-bundle --install     the installed app: "Herdr", dev.herdr.app,
+#                                        a release build, signed with
+#                                        HERDR_APP_SIGN_IDENTITY (default: ad hoc),
+#                                        hardened runtime and the entitlements the
+#                                        browser needs (macos-browser-entitlements.plist),
+#                                        and the caller's PATH in its environment
+#                                        (Finder gives apps none; hc must be found)
 #
-# BROWSER_DEV_APP: an absolute .app path to build into instead. The script
+# BROWSER_APP: an absolute .app path to build into instead. The script
 # refuses to replace a bundle a running app uses: CEF starts helper processes
 # from it on demand, so deleting it can kill that app.
+#
+# cmake and ninja build CEF's C++ wrapper (cef-dll-sys): brew install cmake ninja.
 #
 # CEF_PATH: where the CEF binary distribution is downloaded and kept, outside
 # the repo (default ~/.cache/herdr-app/cef; about 500 MB). A bare
@@ -15,22 +26,44 @@
 # .cargo/config.toml). RUSTUP_TOOLCHAIN picks the Rust toolchain as usual.
 set -euo pipefail
 
-[[ $(uname -s) == Darwin ]] || { echo 'browser-dev-bundle: macOS only' >&2; exit 1; }
+[[ $(uname -s) == Darwin ]] || { echo 'browser-bundle: macOS only' >&2; exit 1; }
 cd "$(dirname "$0")/.."
 
 profile=debug
+install=0
 for arg in "$@"; do
   case $arg in
     --release) profile=release ;;
-    *) echo "usage: scripts/browser-dev-bundle [--release]" >&2; exit 2 ;;
+    --install) profile=release; install=1 ;;
+    *) echo "usage: scripts/browser-bundle [--release | --install]" >&2; exit 2 ;;
   esac
 done
-id=dev.herdr.app.browser-dev
-app=${BROWSER_DEV_APP:-target/browser-dev/Herdr Dev.app}
+if [[ $install == 1 ]]; then
+  id=dev.herdr.app
+  name=Herdr
+  app=${BROWSER_APP:-target/install/Herdr.app}
+  identity=${HERDR_APP_SIGN_IDENTITY:--}
+else
+  id=dev.herdr.app.browser-dev
+  name="Herdr Dev"
+  app=${BROWSER_APP:-target/browser-dev/Herdr Dev.app}
+  identity=-
+fi
 [[ $app == /* ]] || app="$PWD/$app"
 if pgrep -f -- "$app/Contents/" >/dev/null; then
-  echo "browser-dev-bundle: a running app uses $app; quit it, or build elsewhere with BROWSER_DEV_APP=<path>.app" >&2
+  echo "browser-bundle: a running app uses $app; quit it, or build elsewhere with BROWSER_APP=<path>.app" >&2
   exit 1
+fi
+for tool in cmake ninja; do
+  command -v "$tool" >/dev/null || { echo "browser-bundle: $tool not found. CEF's C++ wrapper is built with cmake and ninja: brew install cmake ninja" >&2; exit 1; }
+done
+ls_environment=
+if [[ $install == 1 ]]; then
+  # Finder does not inherit a login shell's PATH; hc must still be discoverable.
+  path="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+  path=${path//&/&amp;}; path=${path//</&lt;}; path=${path//>/&gt;}
+  ls_environment="    <key>LSEnvironment</key><dict><key>PATH</key><string>$path</string></dict>
+"
 fi
 plist() {
   cat > "$app/Contents/Info.plist" <<PLIST
@@ -39,8 +72,8 @@ plist() {
 <plist version="1.0"><dict>
     <key>CFBundleExecutable</key><string>Herdr</string>
     <key>CFBundleIdentifier</key><string>$id</string>
-    <key>CFBundleName</key><string>Herdr Dev</string>
-    <key>CFBundleDisplayName</key><string>Herdr Dev</string>
+    <key>CFBundleName</key><string>$name</string>
+    <key>CFBundleDisplayName</key><string>$name</string>
     <key>CFBundleIconFile</key><string>Herdr</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.0.1</string>
@@ -48,7 +81,7 @@ plist() {
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
-</dict></plist>
+$ls_environment</dict></plist>
 PLIST
 }
 
@@ -57,21 +90,21 @@ if [[ $profile == release ]]; then cargo_args+=(--release); fi
 
 export CEF_PATH=${CEF_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-app/cef}
 case $CEF_PATH in
-  "$PWD"|"$PWD"/*|[!/]*) echo "browser-dev-bundle: CEF_PATH=$CEF_PATH must be an absolute path outside the repo" >&2; exit 1 ;;
+  "$PWD"|"$PWD"/*|[!/]*) echo "browser-bundle: CEF_PATH=$CEF_PATH must be an absolute path outside the repo" >&2; exit 1 ;;
 esac
 # .cargo/config.toml blocks CEF downloads (they'd land in target/ without
 # CEF_PATH); with CEF_PATH set, a first download goes there from CEF's CDN.
 export CEF_DOWNLOAD_URL=${CEF_DOWNLOAD_URL:-https://cef-builds.spotifycdn.com}
 # The CEF build the bindings were made for: cef-dll-sys 156.2.0+156.0.14 -> 156.0.14.
 cef_version=$(awk '/^name = "cef-dll-sys"$/ { getline; sub(/.*\+/, ""); sub(/"$/, ""); print; exit }' Cargo.lock)
-[[ -n $cef_version ]] || { echo 'browser-dev-bundle: no cef-dll-sys in Cargo.lock' >&2; exit 1; }
+[[ -n $cef_version ]] || { echo 'browser-bundle: no cef-dll-sys in Cargo.lock' >&2; exit 1; }
 
 cargo build "${cargo_args[@]}"
 
 cef_dir=$CEF_PATH/$cef_version/cef_macos_aarch64
 [[ $(uname -m) == arm64 ]] || cef_dir=$CEF_PATH/$cef_version/cef_macos_x86_64
 framework="$cef_dir/Chromium Embedded Framework.framework"
-[[ -d $framework ]] || { echo "browser-dev-bundle: no CEF framework at $framework" >&2; exit 1; }
+[[ -d $framework ]] || { echo "browser-bundle: no CEF framework at $framework" >&2; exit 1; }
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
@@ -113,14 +146,22 @@ PLIST
 done
 
 # Inside out, never --deep: the framework's libraries, the framework, each
-# helper, then the app (CEF's code-signing notes). Ad hoc, no hardened
-# runtime: a dev bundle, not something to ship.
-sign() { codesign --force --sign - "$@"; }
+# helper, then the app (CEF's code-signing notes), all with one identity so
+# they match. The dev bundle is ad hoc with no hardened runtime. The installed
+# one has the runtime on, as the release app does, and the browser's
+# entitlements on the executables (V8 and QuickJS need JIT memory); a stable
+# identity keeps macOS' privacy grants and the keychain's "Always Allow" across
+# installs.
+sign_args=(--force --sign "$identity")
+if [[ $install == 1 ]]; then sign_args+=(--options runtime); fi
+if [[ $identity != - ]]; then sign_args+=(--timestamp=none); fi
+sign() { codesign "${sign_args[@]}" "$@"; }
+sign_code() { if [[ $install == 1 ]]; then sign --entitlements scripts/macos-browser-entitlements.plist "$@"; else sign "$@"; fi; }
 for lib in "$app/Contents/Frameworks/Chromium Embedded Framework.framework/Libraries/"*.dylib; do sign "$lib"; done
 sign "$app/Contents/Frameworks/Chromium Embedded Framework.framework"
-for helper in "$app/Contents/Frameworks/Herdr Helper"*.app; do sign "$helper"; done
-sign "$app"
-codesign --verify --strict "$app"
+for helper in "$app/Contents/Frameworks/Herdr Helper"*.app; do sign_code "$helper"; done
+sign_code "$app"
+codesign --verify --deep --strict "$app"
 
 echo "$app"
 echo "size: $(du -sh "$app" | cut -f1) ($(du -sh "$app/Contents/Frameworks/Chromium Embedded Framework.framework" | cut -f1) of it CEF's framework)"
