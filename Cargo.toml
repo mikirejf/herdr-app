@@ -76,6 +76,15 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["N
 raw-window-handle = { version = "0.6", optional = true }
 # The agent proxy's loopback websocket (src/browser/proxy.rs); already locked for gpui-shell.
 tungstenite = { version = "0.29", default-features = false, features = ["handshake"], optional = true }
+# Reading the cookies of the person's other browsers (src/cookie_import.rs).
+rusqlite = { version = "0.41", features = ["bundled"] }
+psl = "2"
+security-framework = "3.7"
+aes = "0.8"
+cbc = "0.1"
+pbkdf2 = "0.12"
+sha1 = "0.10"
+hmac = "0.12"
 
 [target.'cfg(windows)'.dependencies]
 gpui_windows = { package = "gpui-pre-windows", version = "=0.3.8", features = ["render-to-image"] }

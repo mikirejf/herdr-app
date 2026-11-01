@@ -5,6 +5,8 @@ mod bench;
 mod browser;
 mod commands;
 mod control;
+#[cfg(target_os = "macos")]
+mod cookie_import;
 mod core_bin;
 mod files;
 mod hc;
