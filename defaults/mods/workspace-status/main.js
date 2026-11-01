@@ -42,7 +42,7 @@ export default class WorkspaceStatus extends View {
     // A multi-key shortcut is half typed (ctrl-b, waiting for z): as Herdr's PREFIX mode.
     const pending = window()?.pending_keys ?? [];
     const zoomed = space?.tabs.find(tb => tb.active)?.zoomed;
-    const badge = (text, fill) => div().bg(fill).text_color(t.accent_foreground).font_weight(700).child(text);
+    const badge = text => div().bg(t.accent).text_color(t.accent_foreground).font_weight(700).child(text);
     // What the next key can do, as Herdr's prefix bar: only keys actually bound after this prefix.
     const typed = pending.join(" ");
     const next = action => keys().find(k => k.section === "global" && k.action === action
@@ -59,16 +59,16 @@ export default class WorkspaceStatus extends View {
     // character cells like Herdr's mode bar.
     if (resizing || pending.length > 0) {
       const gap = n => div().child(" ".repeat(n));
-      const [name, fill, pairs] = resizing
-        ? ["RESIZE", t.ansi5, [["h/l", "width"], ["j/k", "height"], ["esc", "done"]]]
-        : ["PREFIX", t.accent, prefixHints];
+      const [name, pairs] = resizing
+        ? ["RESIZE", [["h/l", "width"], ["j/k", "height"], ["esc", "done"]]]
+        : ["PREFIX", prefixHints];
       return bar().text_color(t.dim)
-        .child(badge(` ${name} `, fill))
+        .child(badge(` ${name} `))
         .children(pairs.flatMap(([k, what], i) => [gap(i > 0 || resizing ? 2 : 1),
           div().text_color(t.accent).font_weight(700).child(k), gap(1), div().child(what)]));
     }
     return bar().gap(16).text_color(t.muted)
-      .when(Boolean(zoomed), el => el.child(badge("ZOOM", t.accent).px(6)))
+      .when(Boolean(zoomed), el => el.child(badge("ZOOM").px(6)))
       .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
       .when(Boolean(space?.branch), el => el.child(label("branch", space.branch)))
       .child(h_flex().gap(6).items_center().child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} agents`)
