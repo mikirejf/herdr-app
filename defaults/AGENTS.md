@@ -500,7 +500,8 @@ the build doesn't do.
 - A space makes a key sequence: `"ctrl-b z": "pane.zoom"` is ctrl-b, then z.
   While one is half typed, `window().pending_keys` lists its keys
   (`["ctrl-b"]`); the status bar shows PREFIX with what can follow (esc,
-  the prefix again, and the bound resize and keybinds keys). When the first key
+  the prefix again, and the bound resize and keybinds keys), in place of the
+  rest of the bar, in the terminal's font. When the first key
   holds ctrl or cmd, a key that doesn't continue the sequence cancels it and
   is dropped (Escape too), and the first key pressed again goes to the
   program once (ctrl-b ctrl-b sends ctrl-b). Plain-letter sequences ("j k")
@@ -508,7 +509,7 @@ the build doesn't do.
 - `"ctrl-b r": "pane.resize_mode"` works like Herdr's resize mode: h/j/k/l or
   the arrows resize the focused pane until Esc, Enter, r or ctrl-b r; other
   keys do nothing meanwhile, and `window().resize_mode` is true (the status
-  bar shows RESIZE).
+  bar shows RESIZE and its keys instead of the rest).
 
 ## Commands
 
