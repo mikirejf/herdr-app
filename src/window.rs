@@ -2857,6 +2857,14 @@ impl AppWindow {
             }
             let notification = match answer {
                 Ok(v) if name == "browser.screenshot" => json!({ "title": "Screenshot saved", "body": v["path"], "level": "success" }),
+                Ok(v) if name == "browser.import_cookies" => {
+                    let (cookies, sites, failed) = (v["imported"].as_u64().unwrap_or(0), v["sites"].as_u64().unwrap_or(0), v["failed"].as_u64().unwrap_or(0));
+                    let plural = |n: u64, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+                    let title = format!("Imported {} from {}", plural(cookies, "cookie"), plural(sites, "site"));
+                    let body = (failed > 0).then(|| format!("Chromium refused {}", plural(failed, "cookie")));
+                    json!({ "title": title, "body": body, "level": if failed > 0 && cookies == 0 { "error" } else { "success" } })
+                }
+                Err(e) if name == "browser.import_cookies" => json!({ "title": e, "level": "error" }),
                 Ok(v) => json!({ "title": "Browsing data cleared", "body": format!("{} cookies deleted", v["cookies_deleted"]), "level": "success" }),
                 Err(e) => json!({ "title": format!("{name} failed"), "body": e, "level": "error" }),
             };
@@ -3315,6 +3323,16 @@ impl AppWindow {
                 let (done, waiting) = self.later(name);
                 let r = if name == "browser.screenshot" { self.browsers.screenshot(&b, a, done) } else { self.browsers.clear_data(done) };
                 match r {
+                    Ok(()) => self.reply = Some(json!({ "pending": true })),
+                    Err(e) => {
+                        self.reply_to = waiting.borrow_mut().take();
+                        self.fail(e);
+                    }
+                }
+            }
+            "browser.import_cookies" => {
+                let (done, waiting) = self.later(name);
+                match self.browsers.import_cookies(a, cx, done) {
                     Ok(()) => self.reply = Some(json!({ "pending": true })),
                     Err(e) => {
                         self.reply_to = waiting.borrow_mut().take();

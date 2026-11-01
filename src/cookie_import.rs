@@ -134,6 +134,26 @@ pub struct Cookie {
     pub priority: Priority,
 }
 
+impl Cookie {
+    /// The address the cookie is set for: a secure cookie needs https; a
+    /// domain cookie's leading dot is not part of a host.
+    pub fn url(&self) -> String {
+        let scheme = if self.secure { "https" } else { "http" };
+        let host = self.domain.trim_start_matches('.');
+        let host = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
+        let path = if self.path.starts_with('/') {
+            self.path.as_str()
+        } else {
+            "/"
+        };
+        format!("{scheme}://{host}{path}")
+    }
+}
+
 impl fmt::Debug for Cookie {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cookie")
@@ -147,10 +167,65 @@ impl fmt::Debug for Cookie {
 /// Every installed browser profile with a cookie database: Chrome, Brave,
 /// Arc, Edge, Firefox in that order, the profile in use first.
 pub fn sources() -> Vec<Source> {
+    // Debug builds can read made-up profiles instead of the person's own.
+    #[cfg(debug_assertions)]
+    if let Some(root) = std::env::var_os("HERDR_COOKIE_IMPORT_ROOT") {
+        return sources_in(Path::new(&root));
+    }
     let Some(home) = std::env::home_dir() else {
         return Vec::new();
     };
     sources_in(&home.join("Library/Application Support"))
+}
+
+fn sources_json(sources: &[Source]) -> serde_json::Value {
+    serde_json::json!(
+        sources
+            .iter()
+            .map(|s| serde_json::json!({ "id": s.id, "browser": s.browser, "profile": s.profile }))
+            .collect::<Vec<_>>()
+    )
+}
+
+fn sites_json(sites: &[Site]) -> serde_json::Value {
+    serde_json::json!(
+        sites
+            .iter()
+            .map(|s| serde_json::json!({ "domain": s.domain, "count": s.count }))
+            .collect::<Vec<_>>()
+    )
+}
+/// The source `sources()` lists under `id`.
+pub fn source(id: &str) -> Option<Source> {
+    sources().into_iter().find(|s| s.id == id)
+}
+
+/// The subcommands the dialogs run on the app's own binary, so the person's
+/// profiles are listed in a process of their own.
+pub const VERBS: [&str; 2] = ["__cookie-sources", "__cookie-sites"];
+
+/// `__cookie-sources`: every source as `[{id, browser, profile}]`.
+/// `__cookie-sites <source id>`: its sites as `[{domain, count}]`. JSON on
+/// stdout, or the reason on stderr and exit code 1. Never reads a cookie value.
+pub fn cli(verb: &str, args: &[String]) -> i32 {
+    let run = || -> Result<serde_json::Value> {
+        if verb == VERBS[0] {
+            return Ok(sources_json(&sources()));
+        }
+        let id = args.first().context("needs a source id")?;
+        let source = source(id).with_context(|| format!("no cookie source {id:?}"))?;
+        Ok(sites_json(&sites(&source)?))
+    };
+    match run() {
+        Ok(json) => {
+            println!("{json}");
+            0
+        }
+        Err(error) => {
+            eprintln!("{error:#}");
+            1
+        }
+    }
 }
 
 fn sources_in(support: &Path) -> Vec<Source> {
@@ -213,9 +288,31 @@ pub fn read(source: &Source, domains: &[String]) -> Result<Vec<Cookie>> {
     read_with(source, domains, keychain_password)
 }
 
+/// The keychain would not give out a browser's cookie key; the reason is
+/// fit to show the person.
+#[derive(Debug)]
+pub struct Locked(pub String);
+
+impl fmt::Display for Locked {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Locked {}
+
 fn keychain_password(keychain: &Keychain) -> Result<Vec<u8>> {
     security_framework::passwords::get_generic_password(keychain.service, keychain.account)
-        .with_context(|| format!("read {} from the keychain", keychain.service))
+        .map_err(|error| Locked(locked_reason(error.code(), error.message())).into())
+}
+
+fn locked_reason(code: i32, message: Option<String>) -> String {
+    match code {
+        // User canceled, authorization failed, user interaction not allowed.
+        -128 | -25293 | -25308 => "access denied".to_owned(),
+        -25300 => "its key is not in the keychain".to_owned(),
+        _ => message.unwrap_or_else(|| format!("keychain error {code}")),
+    }
 }
 
 /// The password is fetched at most once, when the first cookie needs it.
@@ -400,7 +497,7 @@ fn decrypt(key: &[u8; 16], host: &str, blob: &[u8], version: i64) -> Option<Stri
 }
 
 /// Microseconds since 1601-01-01 UTC.
-fn now_micros() -> i64 {
+pub fn now_micros() -> i64 {
     let since_1970 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_micros() as i64);
@@ -418,7 +515,7 @@ fn firefox_expires(expiry: i64) -> i64 {
 
 /// eTLD+1 of a cookie host; a host with none (an IP address, `localhost`)
 /// stands for itself.
-fn registrable_domain(host: &str) -> String {
+pub fn registrable_domain(host: &str) -> String {
     let host = host.trim_start_matches('.').to_ascii_lowercase();
     let address = host.trim_start_matches('[').trim_end_matches(']');
     if address.parse::<IpAddr>().is_ok() {
@@ -969,7 +1066,10 @@ mod tests {
         assert!(path.with_file_name("Cookies-wal").metadata().unwrap().len() > 0);
         assert_eq!(
             sites(&chrome_source(path)).unwrap(),
-            [Site { domain: "wal.com".into(), count: 1 }]
+            [Site {
+                domain: "wal.com".into(),
+                count: 1
+            }]
         );
         assert!(sites(&chrome_source(scratch.0.join("missing"))).is_err());
     }
@@ -1155,5 +1255,61 @@ mod tests {
             ]
             .map(|(a, b)| (a.to_owned(), b.to_owned()))
         );
+    }
+    #[test]
+    fn the_dialogs_get_sources_and_sites_as_json_without_paths_or_values() {
+        let source = chrome_source(PathBuf::from("/secret/path/Cookies"));
+        assert_eq!(
+            sources_json(&[source]).to_string(),
+            r#"[{"id":"chrome:Default","browser":"Google Chrome","profile":"Test"}]"#
+        );
+        let sites = [Site {
+            domain: "a.com".into(),
+            count: 3,
+        }];
+        assert_eq!(
+            sites_json(&sites).to_string(),
+            r#"[{"domain":"a.com","count":3}]"#
+        );
+    }
+
+    #[test]
+    fn a_keychain_refusal_says_why_to_the_person() {
+        assert_eq!(locked_reason(-128, None), "access denied");
+        assert_eq!(locked_reason(-25293, Some("x".into())), "access denied");
+        assert_eq!(
+            locked_reason(-25300, None),
+            "its key is not in the keychain"
+        );
+        assert_eq!(locked_reason(-1, Some("odd".into())), "odd");
+        assert_eq!(locked_reason(-1, None), "keychain error -1");
+        let error: anyhow::Error = Locked("access denied".into()).into();
+        assert_eq!(
+            error.downcast_ref::<Locked>().map(|l| l.0.as_str()),
+            Some("access denied")
+        );
+    }
+    #[test]
+    fn a_cookie_is_set_for_the_address_its_host_and_path_name() {
+        let mut cookie = Cookie {
+            name: "n".into(),
+            value: "v".into(),
+            domain: ".example.com".into(),
+            path: "/a/b".into(),
+            secure: true,
+            http_only: false,
+            expires: None,
+            same_site: SameSite::Lax,
+            priority: Priority::Medium,
+        };
+        assert_eq!(cookie.url(), "https://example.com/a/b");
+        cookie.secure = false;
+        cookie.domain = "127.0.0.1".into();
+        cookie.path = "".into();
+        assert_eq!(cookie.url(), "http://127.0.0.1/");
+        cookie.domain = "::1".into();
+        assert_eq!(cookie.url(), "http://[::1]/");
+        cookie.domain = "[::1]".into();
+        assert_eq!(cookie.url(), "http://[::1]/");
     }
 }

@@ -714,7 +714,12 @@ const EXEC_OUTPUT: u64 = 8 << 20;
 
 fn run_blocking(command: &str, args: &[String], cwd: Option<String>) -> Result<(i32, String, String), String> {
     use std::io::Read;
-    let mut child = crate::spawn::command(command)
+    let mut command_line = crate::spawn::command(command);
+    // The app's own binary, for a mod that runs one of its hidden subcommands.
+    if let Ok(exe) = std::env::current_exe() {
+        command_line.env("HERDR_APP_EXE", exe);
+    }
+    let mut child = command_line
         .args(args)
         .current_dir(cwd.map(PathBuf::from).unwrap_or_else(home))
         .stdin(Stdio::null())

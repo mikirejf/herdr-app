@@ -141,7 +141,10 @@ your own `agent-browser set viewport` / `set device` work too, and the last one
 set wins. `browser.screenshot {browser?, path?}` saves a PNG of the shown tab's page
 (default `~/Downloads/<host>-<YYYYMMDD-HHMMSS>.png`) and says the path. `browser.clear_data`
 signs the person out of everything in the Herdr browser (all cookies, the cache, the site
-storage of the open sites, then reloads the tabs): run it only when asked. When your connection ends, Herdr undoes what you set on the pages
+storage of the open sites, then reloads the tabs): run it only when asked. `browser.import_cookies
+{source, sites}` brings the chosen sites' cookies over from Chrome, Brave, Arc, Edge or Firefox on
+this Mac (ids from `herdr-app __cookie-sources`, domains from `herdr-app __cookie-sites <source>`):
+that hands over the person's sign-ins, so run it only when asked, for the sites asked. When your connection ends, Herdr undoes what you set on the pages
 (overrides, headers, enabled domains) and keeps the page as it is: no reload.
 
 ## Problems and safety

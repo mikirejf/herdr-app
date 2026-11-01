@@ -598,7 +598,12 @@ The main ones:
   `~/…`; default `~/Downloads/<host>-<YYYYMMDD-HHMMSS>.png`; says the path; an empty tab refuses) and
   `browser.clear_data {}` (signs the person out of everything in Herdr's browser: every cookie of the
   profile, the HTTP cache and the site storage of every site open in a tab, then reloads the tabs;
-  says `cookies_deleted`; no confirmation: the "..." menu asks first, an agent should too).
+  says `cookies_deleted`; no confirmation: the "..." menu asks first, an agent should too) and
+  `browser.import_cookies {source, sites}` (brings the chosen sites' cookies over from Chrome, Brave, Arc,
+  Edge or Firefox on this Mac into Herdr's browser, then reloads the tabs; `source` is an id from
+  `herdr-app __cookie-sources` and `sites` registrable domains from `herdr-app __cookie-sites <source>`, both
+  JSON; says `imported`, `failed`, `sites` and `tabs_reloaded`; for Chrome, Brave, Arc and Edge macOS asks the
+  person for their login password; Firefox needs none, so run it only when asked and only for the sites asked).
   `herdr-app ls` and `browsers()` list them
   (with `zoom` and `viewport`, and every tab as `tabs: [{id, url, title, loading}]` with the shown one's
   index as `active`; the other fields describe the shown tab, and navigate, back, forward, reload, zoom,
@@ -820,13 +825,14 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   (tinted with the text color).
 - The defaults are mods too, read them as examples: `spaces`, `agents`,
   `tabs` (the tab bar), `menu`, `prompt`, `confirm`, `help`, `toast`,
+  `cookie-import` (the two dialogs that bring cookies over from another browser),
   Terminals' `picker`, `peek`, and `pane` (an
   example pane header, not used by the default layouts; a browser pane gets
   a tab strip, back, forward, reload, an address field, zoom, a viewport picker and DevTools from its
   `browser.js` (its header is one row taller, for the tabs): every browser pane of a tab
   shows this header, in every layout, whatever header the layout gives terminal panes; the
   tab row's "..." opens a menu (`browser-menu.js`, a popup of this mod with props
-  `{menu: "browser", browser}`): Save screenshot, Clear browsing data after a confirmation), and `worktree`
+  `{menu: "browser", browser}`): Save screenshot, Import cookies… (the `cookie-import` mod), Clear browsing data after a confirmation), and `worktree`
   (git worktrees as spaces: the space menu's and the + menu's New worktree,
   Open worktree (the repo's checkouts, filtered; one already shown is gone
   to) and Remove worktree open it as a dialog with props `{space, folder?,

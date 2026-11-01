@@ -1,7 +1,7 @@
 // The "..." menu of a browser pane's tab row (opened by browser.js as a popup of
 // this mod with props { menu: "browser", browser }): Save screenshot, the Cookies
-// section, Clear browsing data (after a confirmation). Up/Down move, Enter runs,
-// Esc closes, as in the menu mod.
+// section (Import cookies…, a dialog of the cookie-import mod; Clear browsing data, after a
+// confirmation). Up/Down move, Enter runs, Esc closes, as in the menu mod.
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -9,13 +9,17 @@ import { run, props, closeOverlay, openOverlay } from "herdr";
 
 /** The popup's size (px): browser.js places it under its button. */
 export const MENU_WIDTH = 210;
-export const MENU_HEIGHT = 112;
+export const MENU_HEIGHT = 144;
 
 /** What the menu lists, in order: a row (label, run, danger) or a dim section label. */
 export function menuItems(browser) {
   return [
     { label: "Save screenshot", run: () => run("browser.screenshot", { browser }) },
     { section: "Cookies" },
+    {
+      label: "Import cookies…",
+      run: () => openOverlay({ mod: "cookie-import", kind: "dialog", modal: true, width: 440, height: 270, props: { step: 1 } }),
+    },
     {
       label: "Clear browsing data",
       danger: true,

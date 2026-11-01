@@ -269,6 +269,40 @@ impl Browsers {
         Ok(())
     }
 
+    /// browser.import_cookies: the chosen sites' cookies from another browser's profile into this one's.
+    /// Reading may wait on macOS's keychain prompt, so it happens off the main thread; `done` gets
+    /// `{ imported, failed, sites, tabs_reloaded }` or why not.
+    pub fn import_cookies(&mut self, args: &Value, cx: &mut App, done: super::Done) -> Result<(), String> {
+        use crate::cookie_import;
+        let id = args.get("source").and_then(Value::as_str).unwrap_or_default();
+        let sites: Vec<String> = args.get("sites").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+        if sites.is_empty() {
+            return Err("browser.import_cookies needs sites: an array of domains from `herdr-app __cookie-sites <source>`".into());
+        }
+        let source = cookie_import::source(id).ok_or_else(|| format!("no cookie source {id:?}: see `herdr-app __cookie-sources`"))?;
+        if !self.start_engine(cx) {
+            return Err(format!("the browser can't start: {}", self.error.as_deref().unwrap_or("unknown error")));
+        }
+        let label = source.browser.clone();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(cookie_import::read(&source, &sites));
+        });
+        cx.spawn(async move |cx| {
+            let read = rx.recv().await;
+            let _ = cx.update(|_| match read {
+                Ok(Ok(cookies)) => engine::import_cookies(cookies, done),
+                Ok(Err(e)) => done(Err(match e.downcast_ref::<cookie_import::Locked>() {
+                    Some(locked) => format!("Couldn't unlock {label}'s cookies: {locked}"),
+                    None => format!("Couldn't read {label}'s cookies: {e:#}"),
+                })),
+                Err(_) => done(Err(format!("Couldn't read {label}'s cookies: the reader stopped"))),
+            });
+        })
+        .detach();
+        Ok(())
+    }
+
     /// browser.clear_data: the profile's cookies, cache and the open pages' site storage.
     pub fn clear_data(&mut self, done: super::Done) -> Result<(), String> {
         engine::clear_data(done);

@@ -83,6 +83,11 @@ fn main() {
     if args.get(1).map(String::as_str) == Some(browser::agent::VERB) {
         std::process::exit(browser::agent::provider_main(&args[2..]));
     }
+    // The cookie import dialogs list browser profiles through these.
+    #[cfg(target_os = "macos")]
+    if let Some(verb) = args.get(1).map(String::as_str).filter(|v| cookie_import::VERBS.contains(v)) {
+        std::process::exit(cookie_import::cli(verb, &args[2..]));
+    }
     #[cfg(windows)]
     if args.len() > 1 {
         attach_console();

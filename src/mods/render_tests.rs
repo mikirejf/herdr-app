@@ -176,6 +176,12 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
                 "exec" if first == "sh" && a.get(1).map(from_host).and_then(|v| v.get(2).cloned()) == Some(json!("files")) => {
                     Some(json!({"code":0,"stdout":"d\u{0}src\u{0}f\u{0}README.md\u{0}","stderr":""}))
                 }
+                // The cookie import dialog asks the app's own binary which browsers it finds.
+                "exec"
+                    if first == "sh" && a.get(1).map(from_host).and_then(|v| v.get(1).cloned()) == Some(json!("\"$HERDR_APP_EXE\" __cookie-sources \"$@\"")) =>
+                {
+                    Some(json!({"code":0,"stdout":"[{\"id\":\"firefox:x.default\",\"browser\":\"Firefox\",\"profile\":\"default\"}]","stderr":""}))
+                }
                 "exec"
                     if first == "git"
                         && [
@@ -597,6 +603,15 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
         (
             "mods/confirm",
             json!({"title":"Close space?","command":{"name":"space.close","args":{"id":"s1"}}}),
+        ),
+        (
+            "mods/cookie-import",
+            json!({"step":1,"sources":[{"id":"chrome:Default","browser":"Google Chrome","profile":"Work"},{"id":"firefox:abc.default","browser":"Firefox","profile":"default"}]}),
+        ),
+        ("mods/cookie-import", json!({"step":1,"sources":[]})),
+        (
+            "mods/cookie-import",
+            json!({"step":2,"source":{"id":"chrome:Default","browser":"Google Chrome","profile":"Work"},"sites":[{"domain":"github.com","count":12},{"domain":"example.org","count":3}]}),
         ),
         (
             "mods/toast",

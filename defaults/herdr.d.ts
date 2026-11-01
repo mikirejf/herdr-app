@@ -9,6 +9,7 @@ export interface ExecResult {
 
 /** Runs a program with the user's real environment (HOME, PATH, auth). 30 s limit, 8 MiB output.
  *  `on`: on that machine (a space's `machine`) through herdr-core, its home by default.
+ *  A program run here (without `on`) gets `HERDR_APP_EXE`, the app's own binary (its `__…` subcommands are for the shipped mods).
  *  Rejects when it can't start (not installed, no such folder, the machine is unreachable). */
 export function exec(command: string, args?: string[], options?: { cwd?: string; on?: string | null }): Promise<ExecResult>;
 

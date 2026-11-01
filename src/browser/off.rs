@@ -48,6 +48,10 @@ impl Browsers {
         Err(UNAVAILABLE.into())
     }
 
+    pub fn import_cookies(&mut self, _args: &Value, _cx: &mut App, _done: super::Done) -> Result<(), String> {
+        Err(UNAVAILABLE.into())
+    }
+
     pub fn clear_data(&mut self, _done: super::Done) -> Result<(), String> {
         Err(UNAVAILABLE.into())
     }

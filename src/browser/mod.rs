@@ -34,6 +34,8 @@ pub mod keys;
 pub mod registry;
 
 #[cfg(all(target_os = "macos", feature = "browser"))]
+mod cookies;
+#[cfg(all(target_os = "macos", feature = "browser"))]
 mod native;
 #[cfg(all(target_os = "macos", feature = "browser"))]
 mod proxy;

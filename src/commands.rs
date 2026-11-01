@@ -67,7 +67,8 @@ pub const COMMANDS: &[Command] = &[
         "Save a PNG of a browser's shown page as it looks (default: the focused browser) to path (absolute or ~/…; default ~/Downloads/<host>-<YYYYMMDD-HHMMSS>.png). Says the path. An empty tab has no page: it refuses."),
     cmd("browser.clear_data", &[],
         "Sign out of everywhere in Herdr's browser: delete every cookie of its profile, clear the HTTP cache and the site storage (local storage, IndexedDB, caches) of every site open in a tab, then reload the open tabs. Says how many cookies it deleted. The Browser menu's \"Clear browsing data\" asks first; this does not."),
-    // What you see.
+    cmd("browser.import_cookies", &[req("source"), req("sites")],
+        "Bring cookies from another browser on this Mac into Herdr's browser: source is an id from `herdr-app __cookie-sources` (Chrome, Brave, Arc, Edge, Firefox profiles), sites an array of registrable domains from `herdr-app __cookie-sites <source>`. Chrome, Brave, Arc and Edge make macOS ask the person to unlock their cookies. Reads only those sites' cookies, sets them in the profile, then reloads the open tabs. Says how many cookies it imported and from how many sites. The Browser menu's \"Import cookies…\" asks the person which sites; this does not."),    // What you see.
     cmd("space.select", &[opt("index"), opt("id")], "Show a space (by position or id)."),
     cmd("space.next", &[], "Show the next space."),
     cmd("space.prev", &[], "Show the previous space."),

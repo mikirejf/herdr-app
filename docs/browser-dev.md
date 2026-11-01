@@ -195,8 +195,8 @@ right-click and typing (the keyboard must stay where you left it). It writes you
   are created `0700`; the control socket is `0600` and drops a peer running
   as another user.
 - The "..." at the right end of the tab row opens a popup menu (`defaults/mods/pane/browser-menu.js`,
-  a popup of the `pane` mod): Save screenshot (`browser.screenshot`), a Cookies section (cookie
-  import joins it), and Clear browsing data in the theme's red, which asks through the `confirm`
+  a popup of the `pane` mod): Save screenshot (`browser.screenshot`), a Cookies section with Import cookies… (two
+  dialogs of the `cookie-import` mod, below) and Clear browsing data in the theme's red, which asks through the `confirm`
   mod first (`browser.clear_data`). While the popup overlaps the page, the page is hidden.
   Both commands talk to the page through Herdr's own DevTools calls (ids from
   1,000,000,000, answered to their callers in `runtime.rs`, never to an agent), so they need no
@@ -206,6 +206,19 @@ right-click and typing (the keyboard must stay where you left it). It writes you
   each origin a tab shows, then reloads the tabs. The command answers when Chromium has
   (the control socket waits up to 5 s). Origins no tab shows keep their site storage (cookies
   are gone for all of them).
+- Import cookies… (`defaults/mods/cookie-import`): dialog 1 picks a browser profile, dialog 2 the
+  sites (filter, select all, per-site checkboxes), Import runs `browser.import_cookies {source, sites}`.
+  The mod lists sources and sites by running the app's own binary through `exec`
+  (`"$HERDR_APP_EXE" __cookie-sources` and `__cookie-sites <source id>`, JSON on stdout; macOS only,
+  handled first thing in `main.rs`, no window): that touches no keychain and no cookie value.
+  The command (`Browsers::import_cookies`) calls `cookie_import::read` on a thread of its own,
+  because macOS' keychain prompt blocks the caller until the person answers, then sets each
+  cookie on the global cookie manager (`browser/cookies.rs`: host-only cookies get an empty
+  domain, the url is `https://` for secure cookies, else `http://`), flushes the store, reloads the
+  tabs and answers `{imported, failed, sites, tabs_reloaded}`; a toast says it. `failed` counts
+  cookies Chromium refused. Started before the engine is ready, the import waits for it
+  (`when_ready`). Debug builds read profiles from `$HERDR_COOKIE_IMPORT_ROOT` (laid out like
+  `~/Library/Application Support`) instead of the real ones: use fixtures for tests.
 - One URL gate covers `browser.open`, `browser.navigate`, a restored
   block's url, popups and an agent's `Page.navigate`: `http`, `https` and
   `about:blank` only. A popup from a frame of another origin needs a click.

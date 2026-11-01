@@ -82,6 +82,8 @@ struct State {
     observers: HashMap<c_int, Registration>,
     /// The scale each page's viewport last fit its pane at (`refit`).
     fits: HashMap<String, f64>,
+    /// Work that needs the profile, asked for before CEF's context was ready.
+    when_ready: Vec<Box<dyn FnOnce()>>,
 }
 
 impl State {
@@ -549,6 +551,25 @@ fn clear_site_data(cookies: c_int, done: Done) {
     }
 }
 
+/// Sets cookies from another browser in the profile (waiting for CEF's context
+/// if it is still starting), flushes them to disk, then reloads the open tabs
+/// so pages see the new sign-ins. `done` gets `{ imported, failed, sites }`.
+pub fn import_cookies(cookies: Vec<crate::cookie_import::Cookie>, done: Done) {
+    match phase() {
+        Phase::Starting => STATE.with_borrow_mut(|s| s.when_ready.push(Box::new(move || import_cookies(cookies, done)))),
+        Phase::Ready => {
+            let Some(manager) = cookie_manager_get_global_manager(None) else { return done(Err("Chromium has no cookie manager".into())) };
+            super::cookies::set_all(manager, cookies, Box::new(move |report| {
+                let tabs: Vec<String> = STATE.with_borrow(|s| s.browsers.iter().filter(|o| s.is_current(&o.id, o.generation)).map(|o| o.id.clone()).collect());
+                let reloaded = tabs.iter().filter(|t| reload(t).is_ok()).count();
+                tracing::info!("browser: imported {} cookies from {} sites ({} refused), {reloaded} tabs reloaded", report.imported, report.sites, report.failed);
+                done(Ok(serde_json::json!({ "imported": report.imported, "failed": report.failed, "sites": report.sites, "tabs_reloaded": reloaded })));
+            }));
+        }
+        _ => done(Err("the browser engine isn't running".into())),
+    }
+}
+
 fn phase() -> Phase {
     STATE.with_borrow(|s| s.phase)
 }
@@ -862,6 +883,10 @@ fn context_ready() {
     tracing::info!("browser: CEF context ready");
     for (id, generation, parent, url) in pending {
         create(&id, generation, &parent, &url);
+    }
+    let waiting = STATE.with_borrow_mut(|s| std::mem::take(&mut s.when_ready));
+    for job in waiting {
+        job();
     }
 }
 
