@@ -260,7 +260,8 @@ tabs as its page targets. The proxy answers the Target domain itself
 tab of another pane is never named. A target id is the tab's runtime id
 (`b1:3`); a session id is Herdr's own (`HERDR…`), stripped on the way to the
 tab's DevTools session and put back on what comes from it, with
-several sessions per tab allowed. Attaching a tab whose page was never created
+several sessions per tab allowed. An attach also starts CEF when no page has yet (a fresh app
+with only an empty browser pane), so the agent's requests are served. Attaching a tab whose page was never created
 creates it, hidden (an empty tab opens at `about:blank`). `createTarget` opens a
 tab after the shown one and shows it, `activateTarget` and `Page.bringToFront`
 select a tab (the app window is not raised); attaching or driving a tab does

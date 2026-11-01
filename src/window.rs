@@ -3877,6 +3877,11 @@ impl AppWindow {
             return match self.attach_agent(attach) {
                 // The marker's "last: terminal tN" follows at once.
                 Ok(v) => {
+                    // An agent can attach to a pane that never showed a page, so CEF
+                    // may not run yet: its pump is what carries the agent's requests.
+                    if !attach.get("check").and_then(Value::as_bool).unwrap_or(false) {
+                        self.browsers.start_engine(cx);
+                    }
                     self.publish(cx);
                     cx.notify();
                     v

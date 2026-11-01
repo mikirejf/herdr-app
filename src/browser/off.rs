@@ -36,6 +36,10 @@ impl Browsers {
 
     pub fn reconcile(&mut self, _model: &Model, _chrome: &Node, _window: &mut Window, _cx: &mut App) {}
 
+    pub fn start_engine(&mut self, _cx: &mut App) -> bool {
+        false
+    }
+
     pub fn command(&mut self, _name: &str, _browser: &str, _args: &Value) -> Result<Value, String> {
         Err(UNAVAILABLE.into())
     }

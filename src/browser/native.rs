@@ -169,9 +169,7 @@ impl Browsers {
         if changes.open.is_empty() {
             return;
         }
-        if let Err(e) = engine::start(cx) {
-            tracing::error!("browser: {e:#}");
-            self.error = Some(format!("{e:#}"));
+        if !self.start_engine(cx) {
             return;
         }
         for (id, url) in changes.open {
@@ -181,6 +179,16 @@ impl Browsers {
             }
         }
         view::install_monitor();
+    }
+
+    /// Starts CEF (once). False: it can't run, and every browser block says why.
+    pub fn start_engine(&mut self, cx: &mut App) -> bool {
+        if let Err(e) = engine::start(cx) {
+            tracing::error!("browser: {e:#}");
+            self.error = Some(format!("{e:#}"));
+            return false;
+        }
+        true
     }
 
     fn open_browser(&self, name: &str, browser: &str) -> Result<&registry::Entry, String> {
